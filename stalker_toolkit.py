@@ -224,6 +224,22 @@ if __name__ == "__main__":
         ttk.Button(log_bar, text="导出", width=6, command=export_log).pack(side="right")
         ttk.Label(log_bar, text="运行日志", style="Dim.TLabel").pack(side="left")
         g_log = LogBox(log_lf, height=6)
+
+        # 插件加载结果：日志从启动就写文件，这里补显示到日志栏。
+        g_log.add(f"插件目录: {shared_plugins.plugins_dir}", "dim")
+        if not shared_plugins.plugins:
+            g_log.add("未发现插件", "dim")
+        for p in shared_plugins.plugins:
+            rel = p.get("file", "?")
+            info = p.get("info") or {}
+            name = info.get("name") or rel
+            if p.get("registered"):
+                g_log.add(f"插件已加载: {name} ({rel})", "ok")
+            else:
+                g_log.add(f"插件注册失败: {rel}", "err")
+        for e in shared_plugins.load_errors[:10]:
+            g_log.add(e, "err")
+
         apps = {}
         rebuild(nb, apps)
         attach_log(apps, g_log)

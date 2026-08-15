@@ -801,7 +801,8 @@ def sqfs_list(path: str) -> Optional[list]:
     tool = _find_sqfs_tool()
     if not tool or not tool.endswith("rdsquashfs.exe"): return None
     try:
-        r = subprocess.run([tool, "--describe", path], capture_output=True, text=True, timeout=30)
+        r = subprocess.run([tool, "--describe", path], capture_output=True, text=True, timeout=30,
+                           creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
         if r.returncode != 0: return None
         entries = []
         import re as _re
@@ -824,7 +825,8 @@ def sqfs_list(path: str) -> Optional[list]:
         sizes = {}
         if os.path.exists(t2t):
             try:
-                r2 = subprocess.run([t2t, path], capture_output=True, timeout=120)
+                r2 = subprocess.run([t2t, path], capture_output=True, timeout=120,
+                                   creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
                 if r2.returncode == 0:
                     tar = tarfile.open(fileobj=io.BytesIO(r2.stdout))
                     for m in tar.getmembers():
@@ -852,7 +854,8 @@ def sqfs_extract(path: str, out_dir: str, files: list = None) -> int:
             for f in files:
                 if f.get("is_dir"): continue
                 r = subprocess.run([tool, "--cat", f["path"], path],
-                                   capture_output=True, timeout=60)
+                                   capture_output=True, timeout=60,
+                                   creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
                 if r.returncode == 0 and r.stdout:
                     p = os.path.join(out_dir, f["path"].replace("/", os.sep))
                     os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -861,7 +864,8 @@ def sqfs_extract(path: str, out_dir: str, files: list = None) -> int:
             return count
         else:
             r = subprocess.run([tool, "--unpack-path", "/", "-p", out_dir, path],
-                               capture_output=True, text=True, timeout=300)
+                               capture_output=True, text=True, timeout=300,
+                               creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
             return -1 if r.returncode == 0 else 0
     except Exception:
         return 0
@@ -884,7 +888,8 @@ def sqfs_pack(files: list, out_path: str) -> bool:
         tmp_tar.close()
         with open(tmp_tar.name, "rb") as fh:
             r = subprocess.run([tool, "-q", out_path], stdin=fh,
-                               capture_output=True, timeout=120)
+                               capture_output=True, timeout=120,
+                               creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
         return r.returncode == 0
     except Exception:
         return False

@@ -70,6 +70,15 @@ VSVersionInfo(
 def build(out_dir):
     ensure_pyinstaller()
 
+    # Kill a stale running instance if it is locking previous build output.
+    exe_name = f"{APP_NAME}.exe"
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/F", "/IM", exe_name],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+
     if os.path.isdir(out_dir):
         shutil.rmtree(out_dir, ignore_errors=True)
     os.makedirs(out_dir, exist_ok=True)

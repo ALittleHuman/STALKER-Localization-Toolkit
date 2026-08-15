@@ -30,7 +30,8 @@ try:
 except ImportError:
     try:
         subprocess.run([sys.executable, "-m", "pip", "install", "tkinterdnd2"],
-                       capture_output=True, timeout=120)
+                       capture_output=True, timeout=120,
+                       creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
         from tkinterdnd2 import DND_FILES, TkinterDnD
         _BaseTk = TkinterDnD.Tk; _HAS_DND = True
     except ImportError:

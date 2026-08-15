@@ -328,7 +328,8 @@ def ensure_pillow():
         try:
             import subprocess
             subprocess.run([sys.executable, "-m", "pip", "install", "pillow"],
-                           capture_output=True, timeout=180)
+                           capture_output=True, timeout=180,
+                           creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
             from PIL import Image  # noqa
             return True
         except Exception:
