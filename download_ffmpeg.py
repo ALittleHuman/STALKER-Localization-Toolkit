@@ -107,21 +107,38 @@ def extract_exe(zip_path, target_exe, dst):
 
 
 def ensure_ffmpeg_from_imageio(dst):
-    """Copy the 7.1 ffmpeg from imageio-ffmpeg if available and valid."""
+    """Copy the 7.1 ffmpeg from imageio-ffmpeg.
+
+    If imageio-ffmpeg is not installed, try to install it from PyPI.
+    That package ships a 7.1 ffmpeg binary, which is exactly the safe
+    version for STALKER OGM output.
+    """
     try:
         import imageio_ffmpeg
-        src = imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:
-        src = None
+        print("  imageio-ffmpeg is not installed; trying pip install...")
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "imageio-ffmpeg", "-q", "--timeout=180"],
+                capture_output=True,
+                timeout=300,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            import imageio_ffmpeg
+        except Exception as e:
+            print(f"  pip install failed: {e}")
+            print("  You can also put a 7.x ffmpeg.exe here manually.")
+            return False
 
+    src = imageio_ffmpeg.get_ffmpeg_exe()
     if src and os.path.isfile(src) and ffmpeg_major(src) == 7:
         shutil.copyfile(src, dst)
         print(f"  copied imageio-ffmpeg 7.1 -> {dst}")
         return True
 
-    print("  imageio-ffmpeg 7.1 is not available.")
-    print("  Install it with:  python -m pip install imageio-ffmpeg")
-    print("  Or place a 7.x ffmpeg.exe here manually.")
+    print("  imageio-ffmpeg is installed but its ffmpeg is not a 7.x build.")
+    print("  Use --url to provide a release zip with a 7.x ffmpeg.exe,")
+    print("  or place a 7.x ffmpeg.exe here manually.")
     return False
 
 
