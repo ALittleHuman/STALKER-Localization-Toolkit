@@ -47,7 +47,7 @@ def register(api):
 
 ### 3.1 api.register_decryptor(check, decrypt)
 
-注册加密包解密器。文件系统工具加载文件时，会按注册顺序依次询问 `check(path)`；第一个返回 `True` 的解密器被采用。
+注册加密包解密器。当文件系统工具加载 `.sq*` 文件且其头部魔数为 `ZZZZ`（即 NLC 类型）时，会按注册顺序依次询问 `check(path)`；第一个返回 `True` 的解密器被采用。如果没有注册解密器接受该文件，工具会回退到 `plugins\nlc_sqfs.py` 模块。
 
 参数：
 
@@ -66,7 +66,7 @@ def register(api):
 
 ### 3.2 api.register_format(name, handler)
 
-注册新的封包 / 解包格式。注册后，`name` 会出现在文件系统工具的“格式”下拉框中。
+注册新的封包 / 解包格式。注册后，`name` 会出现在文件系统工具的“格式”下拉框中。用户手动选择该格式时，解包 / 打包会调用对应的 handler；`auto` 自动检测不会检测插件格式。
 
 参数：
 

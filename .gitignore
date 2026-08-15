@@ -13,8 +13,8 @@ ffmpeg.exe
 ffprobe.exe
 deps/
 
-# ÓÃ»§±¾µØÖ÷ÌâÅäÖÃ
+# ç”¨æˆ·é…ç½®æ–‡ä»¶
 user.ltx
 
-# NLC ½âÃÜ²å¼ş±ÕÔ´£¬²»½øÈë²Ö¿â
+# NLC é—­æºæ’ä»¶ï¼Œä¸åœ¨ä»“åº“å‘å¸ƒ
 plugins/nlc_sqfs.py

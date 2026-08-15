@@ -555,7 +555,7 @@ class FSToolApp:
         desc = ALL_FMTS.get(fmt, {}).get("name", "")
         if not desc:
             pf = next((f for f in self.plugins.formats if f["name"] == fmt), None)
-            desc = (pf or {}).get("description", "") or fmt
+            desc = ((pf or {}).get("handler") or {}).get("description", "") or fmt
         self.fmt_desc.configure(text=desc)
 
     def _on_input_change(self, *a):

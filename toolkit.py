@@ -1267,8 +1267,7 @@ class PluginManager:
 
         return Api()
 
-
-def find_decryptor(self, path):
+    def find_decryptor(self, path):
         """Return the first registered decryptor that accepts path, else None."""
         for d in self.decryptors:
             try:
