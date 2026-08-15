@@ -125,6 +125,12 @@ def register(api):
 - `callback: callable`：点击时调用，无参数。
 - `location: str`：目前只支持 `"context"`（右键菜单）。
 
+渲染位置：文件系统工具左侧“DB 文件列表”（`CanvasTree`）的右键菜单。每个插件菜单项前会自动加一条分隔线。
+
+调用方式：用户点击菜单项时，宿主执行 `callback()`，不传任何参数。
+
+当前限制：`callback` 拿不到宿主上下文（如当前选中的 DB 文件、已加载的数据、文件系统工具实例）。插件只能通过自己的闭包/全局状态保存信息。如果需要操作宿主数据，请使用 `register_tool` 自建界面，或等后续版本提供上下文参数。
+
 示例：
 
 ```python
@@ -137,7 +143,7 @@ def register(api):
 
 ### 3.4 api.register_option(label, choices, callback=None)
 
-在文件系统工具顶部新增一个下拉选项。
+在文件系统工具顶部（“格式”行下方）新增一个下拉选项。
 
 参数：
 
@@ -145,10 +151,24 @@ def register(api):
 - `choices: list[str]`：可选值列表，第一项为默认值。
 - `callback: callable | None`：切换时回调，参数为新值字符串；可选。
 
+渲染方式：每个选项生成一行 `标签(label) + OptionMenu(choices)`，默认选中 `choices[0]`。
+
+调用方式：用户切换选项时，宿主通过 `StringVar.trace_add("write", ...)` 触发 `callback(新值字符串)`。
+
+当前限制：
+
+- 该选项只在文件系统工具中渲染。
+- `callback` 只能拿到新值字符串，拿不到宿主上下文；插件如需要保存当前值，可在回调里用闭包记录。
+- 文件系统工具内部可通过 `app.plugin_option(label)` 读取单个值、`app.plugin_options()` 读取所有值，但插件 API 不提供主动查询入口。
+
 示例：
 
 ```python
+current_mode = "自动"
+
 def on_mode_changed(value):
+    global current_mode
+    current_mode = value
     print("mode =", value)
 
 def register(api):
