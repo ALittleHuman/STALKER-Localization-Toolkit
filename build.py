@@ -130,10 +130,14 @@ def build(out_dir):
     if not os.path.isdir(app_dir):
         raise RuntimeError(f"Build output not found: {app_dir}")
 
-    # Belt-and-braces: remove any __pycache__ from bundled plugin dir.
-    bundled_plugin_cache = os.path.join(app_dir, "_internal", "plugins", "__pycache__")
-    if os.path.isdir(bundled_plugin_cache):
-        shutil.rmtree(bundled_plugin_cache, ignore_errors=True)
+    # Remove git placeholder files and any __pycache__ from the bundle.
+    for dp, dn, fn in os.walk(app_dir):
+        for f in fn:
+            if f == ".gitkeep":
+                os.unlink(os.path.join(dp, f))
+        for d in dn:
+            if d == "__pycache__":
+                shutil.rmtree(os.path.join(dp, d), ignore_errors=True)
 
     for exe in ("ffmpeg.exe", "ffprobe.exe"):
         src = os.path.join(BASE, exe)
