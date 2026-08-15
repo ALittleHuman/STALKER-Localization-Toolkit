@@ -177,20 +177,55 @@ def apply_titlebar(root, mode=None):
     except Exception:
         pass
 
+def _ico_to_photoimages(ico_path, sizes=(16, 24, 32, 48, 64)):
+    """Extract several sizes from an .ico as tk.PhotoImage for crisp HiDPI icons."""
+    try:
+        import io
+        import tkinter as tk
+        from PIL import Image
+        img = Image.open(ico_path)
+        out = []
+        for s in sizes:
+            try:
+                im = img.resize((s, s), Image.LANCZOS)
+                buf = io.BytesIO()
+                im.save(buf, format="PNG")
+                out.append(tk.PhotoImage(data=buf.getvalue()))
+            except Exception:
+                continue
+        return out or None
+    except Exception:
+        return None
+
+
 def set_app_icon(win):
-    """Set the window/taskbar icon to app_icon.ico (works in dev and PyInstaller)."""
+    """Set the window/taskbar icon to app_icon.ico (works in dev and PyInstaller).
+
+    Uses iconphoto() with 16/24/32/48/64 px images so Windows can pick a crisp
+    size for title bar and taskbar on HiDPI displays. Falls back to iconbitmap().
+    """
     candidates = []
     if hasattr(sys, "_MEIPASS"):
         candidates.append(os.path.join(sys._MEIPASS, "app_icon.ico"))
     here = os.path.dirname(os.path.abspath(__file__))
     candidates.append(os.path.join(here, "app_icon.ico"))
     for p in candidates:
-        if os.path.isfile(p):
+        if not os.path.isfile(p):
+            continue
+        imgs = _ico_to_photoimages(p)
+        if imgs:
             try:
-                win.iconbitmap(default=p)
+                win.iconphoto(True, *imgs)
+                # Keep references alive for the lifetime of the window.
+                win._toolkit_icons = imgs
                 return True
             except Exception:
-                continue
+                pass
+        try:
+            win.iconbitmap(default=p)
+            return True
+        except Exception:
+            continue
     return False
 
 
