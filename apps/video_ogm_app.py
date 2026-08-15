@@ -29,7 +29,7 @@ from toolkit import (
 
 def _config_path() -> str:
     try:
-        d = os.path.dirname(os.path.abspath(__file__))
+        d = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     except NameError:
         d = os.getcwd()
     return os.path.join(d, "video_ogm_tool.cfg.json")
@@ -81,7 +81,7 @@ def find_ffmpeg() -> tuple[Optional[str], Optional[str]]:
         return ffmpeg_exe, ffprobe_exe
 
     try:
-        d = os.path.dirname(os.path.abspath(__file__))
+        d = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     except NameError:
         d = os.getcwd()
     for name in ("ffmpeg", "ffprobe"):

@@ -82,7 +82,7 @@ class FontPackApp:
             if os.path.exists(cand):
                 self.font_var.set(cand); break
         else:
-            local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "msyh.ttf")
+            local = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "msyh.ttf")
             if os.path.exists(local):
                 self.font_var.set(local)
 
