@@ -4,7 +4,7 @@ STALKER X-Ray 引擎文件格式库 v3
 支持 6 种 DB 格式 + sq_base 解密
 纯 Python 实现，零外部依赖
 """
-import struct, os
+import struct, os, sys
 from typing import Optional, Callable
 
 # ═══════════════════════════════════════
