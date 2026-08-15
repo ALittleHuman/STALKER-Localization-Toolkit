@@ -49,8 +49,8 @@ def collect_xml_files(root: Path) -> dict[str, Path]:
 
 
 def read_file_text(filepath: Path) -> str:
-    """读取文件，依次尝试 UTF-8 / Windows-1251 / GBK。"""
-    for enc in ("utf-8", "windows-1251", "gbk"):
+    """读取文件，依次尝试 UTF-8 / Windows-1251 / Windows-1252 / GBK。"""
+    for enc in ("utf-8", "windows-1251", "windows-1252", "gbk"):
         try:
             return filepath.read_text(encoding=enc)
         except (UnicodeDecodeError, UnicodeError):

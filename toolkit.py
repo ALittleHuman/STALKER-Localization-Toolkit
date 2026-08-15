@@ -187,7 +187,6 @@ def refresh_theme(w):
 # 2. 公共组件
 # ════════════════════════════════════════════════════════════════
 
-DEFAULT_ENCODINGS = ["utf-8-sig", "utf-8", "gb18030", "cp1251", "cp1252", "latin-1"]
 
 
 
@@ -361,7 +360,7 @@ def fmt_size(sz):
 
 
 # ─── 公共功能 (本质相同的逻辑统一实现, 子功能用参数区分) ───
-DEFAULT_ENCODINGS = ["utf-8-sig", "utf-8", "gb18030", "cp1251", "cp1252", "latin-1"]
+DEFAULT_ENCODINGS = ["utf-8-sig", "utf-8", "windows-1251", "windows-1252", "gb18030", "latin-1"]
 
 
 def read_text_file(path, encodings=None):
