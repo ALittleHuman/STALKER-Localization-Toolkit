@@ -519,20 +519,27 @@ def read_text_file(path, encodings=None):
 
 def parse_xml_texts(text):
     """从 XML 文本提取所有文本节点内容 (容错).
-    ET 解析优先 (保留 \\t); 失败时正则回退抓 <text>/<string> 内容并解标签."""
+    支持：合法 XML、多根 XML、坏实体/非法 XML。
+    多根 XML 在 STALKER 模组中非常常见，必须完整提取。"""
     import re
     import xml.etree.ElementTree as ET
     try:
         root = ET.fromstring(text)
         return list(root.itertext())
     except Exception:
-        strip_re = re.compile(r"<[^>]+>")
-        texts = []
-        for m in re.finditer(r"<text[^>]*>(.*?)</text>", text, re.S):
-            texts.append(strip_re.sub("", m.group(1)))
-        for m in re.finditer(r"<string[^>]*>(.*?)</string>", text, re.S):
-            texts.append(strip_re.sub("", m.group(1)))
-        return texts
+        pass
+    # 多根 XML：移除声明后包一层根再解析。
+    try:
+        body = re.sub(r"^\s*<\?xml[^>]*\?>\s*", "", text, count=1, flags=re.I | re.S)
+        root = ET.fromstring("<toolkit_root>" + body + "</toolkit_root>")
+        return list(root.itertext())
+    except Exception:
+        pass
+    # 最后回退：去掉所有标签，提取剩余文本（宁多勿漏，
+    # 多提取的字符只会让字库稍大，漏提取会导致游戏显示方块）。
+    strip_re = re.compile(r"<[^>]+>")
+    plain = strip_re.sub("", text)
+    return [plain] if plain.strip() else []
 
 
 def collect_files(root_dir, exts=None, exclude_dirs=()):
