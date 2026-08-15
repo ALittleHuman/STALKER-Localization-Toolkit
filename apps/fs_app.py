@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Auto-split app module."""
+"""文件系统 App (FSToolApp)."""
 import os, sys, re, threading, struct, shutil, subprocess, tempfile, time, json, glob
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -511,8 +511,10 @@ class FSToolApp:
             entries = sqfs_list(tf.name)
             if not entries:
                 self._log("  NLC 解密后解析失败", "err")
-                try: os.unlink(tf.name)
-                except: pass
+                try:
+                    os.unlink(tf.name)
+                except Exception as e:
+                    self._log(f"  解密临时文件清理失败: {e}", "warn")
                 return
             self.raws[path] = b"DEC:" + tf.name.encode()
             self.loaded[path] = self._build_model(entries, path)

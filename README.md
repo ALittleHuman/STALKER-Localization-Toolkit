@@ -87,6 +87,7 @@ python download_ffmpeg.py
 ```bat
 python run_ci.py            # 完整回归（含 cross_validate，需要 converter.exe）
 python run_ci.py --fast     # 快速回归（编译 / 导入 / DB 往返）
+python run_ui_smoke.py      # GUI 构建 + 编码/XML/文本提取/视频发现 smoke 测试
 ```
 
 GitHub Actions 会在 push / PR 时自动运行核心测试。

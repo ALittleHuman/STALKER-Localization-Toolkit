@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Auto-split app module."""
+"""OGM 视频转换 App (VideoOGMApp)."""
 import os, sys, re, threading, struct, shutil, subprocess, tempfile, time, json, glob
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -492,6 +492,12 @@ class VideoOGMApp:
             self.root.geometry("680x620")
             self.root.minsize(500, 500)
         self.root.configure(bg=T["bg"])
+        self._log = lambda msg, tag="info": log_to_file(msg, tag)
+        if self.converter:
+            self._log(f"ffmpeg: {self.ffmpeg}", "ok")
+            self._log(f"ffprobe: {self.ffprobe}", "ok")
+        else:
+            self._log("ffmpeg/ffprobe 未找到", "warn")
 
         self._build_ui()
         self._ui = _make_pump(self.root)
@@ -747,6 +753,7 @@ class VideoOGMApp:
                 return
 
         self.converting = True
+        self._log(f"开始转换: {self.source_path} -> {out}", "ok")
         self._set_ui_state(False)
         self.progress["value"] = 0
         self.status_lbl.configure(text="转换中…")
@@ -768,11 +775,13 @@ class VideoOGMApp:
             if ok:
                 self.progress["value"] = 100
                 self.status_lbl.configure(text=f"完成: {os.path.basename(output)}")
+                self._log(f"转换完成: {output}", "ok")
                 ni, _ = parse_video_info(output, self.ffprobe)
                 if ni:
                     self._set_info("══ 转换完成 ══\n" + "\n".join(self._fmt(ni)))
             else:
                 self.status_lbl.configure(text=f"失败: {msg}")
+                self._log(f"转换失败: {msg}", "err")
 
         self.root.after(0, done)
 
@@ -781,6 +790,7 @@ class VideoOGMApp:
         self.status_lbl.configure(text=f"转换中… {pct:.0f}%")
 
     def _cancel_convert(self):
+        self._log("用户取消转换", "warn")
         if self.converter:
             self.converter.cancel()
         self.status_lbl.configure(text="已取消")
@@ -818,6 +828,7 @@ class VideoOGMApp:
         self.ffprobe = fp
         self.converter = Converter(path, fp)
         _save_config({"ffmpeg": path, "ffprobe": fp})
+        self._log(f"手动设置 ffmpeg: {path}", "ok")
         self._update_footer()
         messagebox.showinfo("完成", f"ffmpeg: {path}\nffprobe: {fp}")
 

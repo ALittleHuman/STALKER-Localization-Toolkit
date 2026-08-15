@@ -18,7 +18,7 @@ STALKER_Toolkit\
 - 递归扫描 `plugins\` 下所有 `.py` 文件（含直接子目录）。
 - 文件名以 `_` 开头的文件被忽略；`__pycache__` 和 `.git` 目录被忽略。
 - 插件按相对路径排序后依次加载。
-- 如果 `plugins\enabled.txt` 存在且内容非空，则只加载其中列出的文件。每行一个相对路径（如 `nlc_sqfs.py`），`#` 开头为注释。
+- 如果 `plugins\enabled.txt` 存在且内容非空，则只加载其中列出的文件。每行一个相对路径（如 `nlc_sqfs.py`），`#` 开头为注释；支持 `*` 和 `?` 通配符（如 `*.py`、`subdir/*.py`）。
 - 单个插件加载或注册失败不会影响工具启动，失败信息会写入日志；文件系统工具中会额外弹窗提示。
 
 ## 2. 插件结构
@@ -218,3 +218,5 @@ def register(api):
 - 需要第三方二进制时，放在 `plugins\` 下自己的目录里，并用 `os.path.join(os.path.dirname(__file__), ...)` 定位。
 - 加载失败不会阻断工具启动，但会在日志中记录 `plugin load failed` 并弹窗提示。
 - 插件只在 Hub 启动时加载一次，修改插件后请重启工具。
+- `register_tool` 构建的界面建议使用 `ttk` 控件和公共色板（`toolkit.color()` / `toolkit.T`），这样 Hub 切换亮/暗主题时宿主会通过 `refresh_theme()` 自动刷新；使用 tk 原生控件并硬编码颜色的界面需自行处理主题切换。
+- 插件工具对象（`builder` 的返回值）如果提供 `_log(msg, tag)` 或 `log(msg)` 方法，宿主会自动把它们重定向到 Hub 的全局日志；如果返回 `None`，可用 `toolkit.log_to_file(msg, tag)` 写入 `logs/runtime.log`。

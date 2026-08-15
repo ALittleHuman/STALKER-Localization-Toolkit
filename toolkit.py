@@ -13,6 +13,9 @@ import sys
 
 from tkinter import ttk, filedialog, messagebox
 
+APP_NAME = "STALKER Localization Toolkit"
+APP_VERSION = "1.0.0"
+
 # tkinterdnd2 可选 (拖拽)
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -1217,6 +1220,12 @@ class PluginManager:
             return None
         return names if names else None
 
+    @staticmethod
+    def _match_allow(name, allow):
+        """Match allow-list entries; '*' and '?' wildcards are supported."""
+        import fnmatch
+        return any(fnmatch.fnmatch(name, pat) for pat in allow)
+
     def _iter_plugin_files(self):
         """Yield (relative_name, absolute_path) for all loadable plugins."""
         allow = self._enabled_allowlist()
@@ -1232,7 +1241,7 @@ class PluginManager:
         files.sort(key=lambda x: x[0])
         if allow is None:
             return files
-        return [(rel, full) for rel, full in files if rel in allow]
+        return [(rel, full) for rel, full in files if self._match_allow(rel, allow)]
 
     def scan(self):
         """Import all plugin files and call their register()."""

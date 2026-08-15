@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Auto-split app module."""
+"""XML 校对 App (XMLCompareApp)."""
 import os, sys, re, threading, struct, shutil, subprocess, tempfile, time, json, glob
 from datetime import datetime
 from dataclasses import dataclass, field

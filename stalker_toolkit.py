@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-STALKER 汉化工具集 — 单文件整合版
-主题/组件/六个工具 GUI/hub 全部集中于此文件, 杜绝多文件不一致.
+STALKER Localization Toolkit — Hub
+六个图形化工具统一入口：文件系统、编码转换、文本提取、
+XML 校对、OGM 视频转换、汉化包生成，并托管插件扩展的栏目。
 运行: python stalker_toolkit.py
 """
 import os, sys, re, threading, struct, shutil, subprocess, tempfile, time, json, glob
@@ -32,7 +33,7 @@ from toolkit import (
     fmt_size, read_text_file, parse_xml_texts,
     log_section, vscrollbar, drop_zone,
     load_user_theme, save_user_theme, apply_titlebar,
-    log_to_file, set_app_icon,
+    log_to_file, set_app_icon, APP_NAME, APP_VERSION,
     _BaseTk, _HAS_DND, DND_FILES,
 )
 from apps.font_pack_app import FontPackApp
@@ -91,7 +92,7 @@ if __name__ == "__main__":
     except Exception:
         pass
     root = _BaseTk()
-    root.title("STALKER Localization Toolkit 1.0.0")
+    root.title(f"{APP_NAME} {APP_VERSION}")
     set_app_icon(root)
     root.geometry("1280x860")
     root.minsize(1024, 700)
@@ -166,7 +167,12 @@ if __name__ == "__main__":
                     app._log = lambda msg, tag="info": g_log.add(msg, tag)
                 if hasattr(app, "log") and callable(app.log):
                     app.log = lambda msg: g_log.add(msg)
-            hide(app.root)
+            app_root = getattr(app, "root", None)
+            if app_root is not None:
+                try:
+                    hide(app_root)
+                except Exception:
+                    pass
 
     def build_hub(mode="dark"):
         """构建 hub 全部界面 (仅首次构建时销毁重建; 切主题只换色不重建)."""
@@ -178,7 +184,7 @@ if __name__ == "__main__":
 
         header = ttk.Frame(root)
         header.pack(fill="x", padx=14, pady=(12, 4))
-        ttk.Label(header, text="STALKER 汉化工具集", style="Title.TLabel").pack(side="left")
+        ttk.Label(header, text=APP_NAME, style="Title.TLabel").pack(side="left")
         # 主题下拉框在右, 标签在其左侧
         theme_var = tk.StringVar(value="暗色" if mode == "dark" else "亮色")
 
@@ -223,4 +229,12 @@ if __name__ == "__main__":
         attach_log(apps, g_log)
 
     build_hub(load_user_theme())
+    if shared_plugins.load_errors:
+        root.after(
+            800,
+            lambda: messagebox.showwarning(
+                "插件加载失败",
+                "\n".join(shared_plugins.load_errors[:10]),
+            ),
+        )
     root.mainloop()

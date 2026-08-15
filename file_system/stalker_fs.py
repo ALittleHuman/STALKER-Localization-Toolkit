@@ -889,5 +889,7 @@ def sqfs_pack(files: list, out_path: str) -> bool:
     except Exception:
         return False
     finally:
-        try: os.unlink(tmp_tar.name)
-        except: pass
+        try:
+            os.unlink(tmp_tar.name)
+        except OSError:
+            pass  # best-effort temp file cleanup

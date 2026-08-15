@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Auto-split app module."""
+"""文本提取 App (TextExtractApp)."""
 import os, sys, re, threading, struct, shutil, subprocess, tempfile, time, json, glob
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -27,6 +27,19 @@ from toolkit import (
     _BaseTk, _HAS_DND, DND_FILES,
     log_to_file, errbox,
 )
+
+# ── 提取用正则（与 convert_app 保持一致） ──
+RUS_LETTERS = "".join(chr(c) for c in range(0x0410, 0x0450)) + "\u0401\u0451"
+RUS_LET_CPL = re.compile("[" + RUS_LETTERS + "]")
+SCRIPT_LINE_PERMIT_PTN = re.compile(
+    r"([Mm]essage|[Tt]ext(?!ure)|(?<![a-z])[Nn]ews(?![a-z]))")
+SCRIPT_LINE_SENSITIVE_PTN = re.compile(
+    r"(exec|write|parse_names|load|(?<!de)script(?!ion)|call|"
+    r"set(?![Tt]ext)|open|sound|effect|abort|print|console|cmd|return)")
+SCRIPT_MATCH_SENSITIVE_PTN = re.compile(r'("[\s]*return)')
+CFG_TAG_PTN = re.compile(
+    r"<(?:text|bio|title|name)(?:| [ \S]*?[^/]) *?>([^<>]*?)</(?:text|bio|title|name)>")
+CFG_ATTR_PTN = re.compile(r'(?:hint|name)\s*=\s*((?:"[^"]*")|' + r"(?:'[^']*'))")
 
 def _does_text_look_like_id(text: str) -> bool:
     if len(RUS_LET_CPL.findall(text)) > 0:
