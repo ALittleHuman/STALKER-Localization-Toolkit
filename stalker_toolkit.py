@@ -32,7 +32,7 @@ from toolkit import (
     fmt_size, read_text_file, parse_xml_texts,
     log_section, vscrollbar, drop_zone,
     load_user_theme, save_user_theme, apply_titlebar,
-    log_to_file,
+    log_to_file, set_app_icon,
     _BaseTk, _HAS_DND, DND_FILES,
 )
 from apps.font_pack_app import FontPackApp
@@ -92,6 +92,7 @@ if __name__ == "__main__":
         pass
     root = _BaseTk()
     root.title("STALKER Localization Toolkit 1.0.0")
+    set_app_icon(root)
     root.geometry("1280x860")
     root.minsize(1024, 700)
     root.configure(bg=T["bg"])

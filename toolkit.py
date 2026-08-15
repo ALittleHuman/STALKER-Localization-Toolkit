@@ -177,6 +177,23 @@ def apply_titlebar(root, mode=None):
     except Exception:
         pass
 
+def set_app_icon(win):
+    """Set the window/taskbar icon to app_icon.ico (works in dev and PyInstaller)."""
+    candidates = []
+    if hasattr(sys, "_MEIPASS"):
+        candidates.append(os.path.join(sys._MEIPASS, "app_icon.ico"))
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.join(here, "app_icon.ico"))
+    for p in candidates:
+        if os.path.isfile(p):
+            try:
+                win.iconbitmap(default=p)
+                return True
+            except Exception:
+                continue
+    return False
+
+
 def log_to_file(msg, tag="error"):
     """Append a timestamped line to logs/runtime.log for tracing."""
     try:
