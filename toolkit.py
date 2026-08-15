@@ -111,9 +111,18 @@ def apply_titlebar(root, mode=None):
         # Tk 的 winfo_id() 返回的是客户区子窗口句柄，真正的顶层窗口
         # （带标题栏）是它的父窗口。对子窗口调用 DwmSetWindowAttribute
         # 会返回 ERROR_INVALID_HANDLE (0x80070006)，导致标题栏不变色。
+        # 注意：窗口在 mainloop 前可能尚未完成映射，此时 GetParent 会
+        # 返回 0，需要先 update_idletasks() 让顶层窗口创建完成。
         hwnd = root.winfo_id()
         user32 = ctypes.windll.user32
-        top = user32.GetParent(hwnd) or hwnd
+        top = user32.GetParent(hwnd)
+        if not top:
+            try:
+                root.update_idletasks()
+            except Exception:
+                pass
+            top = user32.GetParent(root.winfo_id())
+        top = top or hwnd
         value = 1 if mode == "dark" else 0
         dwm = ctypes.windll.dwmapi
         # DWMWA_USE_IMMERSIVE_DARK_MODE: 20 = Windows 11/10 1903+;
