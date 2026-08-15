@@ -728,27 +728,30 @@ class ConvertApp(ttk.Frame):
 
     # ------------------------------ 核心转换 ------------------------------
     def _get_source_encoding(self, raw_data):
-        """获取源编码 (确定性优先):
-        1. XML 声明 (权威) → 2. 严格 utf-8 解码测试 (确定性区分 utf-8/单字节)
-        → 3. 手动指定 (非 utf-8 文件) → 4. cp1251 兜底."""
-        # 1. XML 声明优先
-        m = re.search(rb'<\?xml[^>]*encoding\s*=\s*["\']([^"\']+)["\']',
-                      raw_data[:500], re.I | re.S)
-        if m:
-            decl_enc = m.group(1).decode("ascii", "replace").strip().lower()
-            if decl_enc in ("utf-8", "utf8"):
-                return "utf-8"
-            if decl_enc in ("windows-1251", "windows1251", "cp1251", "cp-1251"):
-                return "windows-1251"
-            if decl_enc:
-                return decl_enc
-        # 2. 严格 utf-8 解码测试 (确定性, 区分 utf-8 vs 单字节编码)
+        """获取源编码 (可靠性优先):
+        1. 严格 utf-8 解码测试 (多字节检测第一，不信任声明)
+        2. XML 声明 (仅作为单字节编码提示)
+        3. 手动指定 → 4. cp1251 兜底."""
+        # 1. 多字节检测第一: 内容严格可被 UTF-8 解码，就按 UTF-8 读。
         try:
             raw_data.decode("utf-8")
             return "utf-8"
         except UnicodeDecodeError:
             pass
-        # 3. 手动指定 (对无声明且非 utf-8 的文件生效)
+
+        # 2. 单字节编码: XML 声明仅作参考。
+        m = re.search(rb'<\?xml[^>]*encoding\s*=\s*["\']([^"\']+)["\']',
+                      raw_data[:500], re.I | re.S)
+        if m:
+            decl_enc = m.group(1).decode("ascii", "replace").strip().lower()
+            if decl_enc in ("windows-1251", "windows1251", "cp1251", "cp-1251"):
+                return "windows-1251"
+            if decl_enc in ("windows-1252", "windows1252", "cp1252", "cp-1252"):
+                return "windows-1252"
+            if decl_enc:
+                return decl_enc
+
+        # 3. 手动指定
         specified_enc = self._snap['source_enc'].strip().lower()
         if specified_enc and specified_enc != "auto":
             return specified_enc
