@@ -7,7 +7,23 @@ STALKER 汉化工具集 — 公共组件库
 import os
 import time
 import tkinter as tk
-from tkinter import ttk
+import subprocess
+import sys
+
+from tkinter import ttk, filedialog
+
+# tkinterdnd2 可选 (拖拽)
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    _BaseTk = TkinterDnD.Tk; _HAS_DND = True
+except ImportError:
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "install", "tkinterdnd2"],
+                       capture_output=True, timeout=120)
+        from tkinterdnd2 import DND_FILES, TkinterDnD
+        _BaseTk = TkinterDnD.Tk; _HAS_DND = True
+    except ImportError:
+        _BaseTk = tk.Tk; _HAS_DND = False; DND_FILES = None
 
 # ─── 色板 (唯一来源: 亮/暗两套, 样式代码共用同一函数) ───
 THEMES = {
@@ -52,6 +68,78 @@ T = palette("dark")
 
 # 当前主题模式 (hub 切换后重建工具时, 工具内部 apply_theme() 沿用此模式)
 CURRENT_MODE = "dark"
+
+_BG_ROLES = ("bg", "surface", "surface2", "entry_bg", "selected")
+
+
+def _role_of(color_val):
+    """根据当前颜色值反推角色 (仅背景类, 避免与前景/滚动条色冲突导致切主题错位)."""
+    if not color_val:
+        return None
+    for mode in ("dark", "light"):
+        for role in _BG_ROLES:
+            if THEMES[mode].get(role) == color_val:
+                return role
+    return None
+
+
+def refresh_theme(w):
+    """主题切换后递归刷新 tk 原生控件颜色 (不重建, 保留工作区/日志/状态)."""
+    try:
+        cls = w.winfo_class()
+    except Exception:
+        return
+    try:
+        if isinstance(w, LogBox):
+            w.recolor()
+        elif cls == "Canvas":
+            w.configure(bg=T["surface"])
+            ctree = getattr(w, "_ctree", None)
+            if ctree is not None:
+                ctree.recolor()
+        elif cls == "Text":
+            role = _role_of(str(w.cget("bg")))
+            w.configure(bg=T.get(role or "surface", T["surface"]),
+                        fg=T["text"], insertbackground=T["text"])
+        elif cls == "Label":
+            role = _role_of(str(w.cget("bg")))
+            w.configure(bg=T.get(role or "bg", T["bg"]), fg=T["text"])
+        elif cls == "Button":
+            role = _role_of(str(w.cget("bg")))
+            w.configure(bg=T.get(role or "surface2", T["surface2"]),
+                        fg=T["text"], activebackground=T["accent"],
+                        activeforeground="#ffffff", disabledforeground=T["text_dim"])
+        elif cls == "Entry":
+            w.configure(bg=T["entry_bg"], fg=T["text"], insertbackground=T["text"],
+                        disabledbackground=T["entry_bg"], disabledforeground=T["text"],
+                        highlightbackground=T["border"], highlightcolor=T["accent"])
+        elif cls == "Checkbutton":
+            role = _role_of(str(w.cget("bg")))
+            w.configure(bg=T.get(role or "bg", T["bg"]), fg=T["text"],
+                        activebackground=T.get(role or "bg", T["bg"]),
+                        selectcolor=T["surface2"])
+        elif cls == "Menubutton":
+            w.configure(bg=T["surface2"], fg=T["text"],
+                        activebackground=T["selected"], activeforeground=T["text_bright"])
+        elif cls == "Menu":
+            w.configure(bg=T["surface2"], fg=T["text"], activebackground=T["selected"],
+                        activeforeground=T["text_bright"])
+        elif cls in ("Frame", "Labelframe", "Toplevel"):
+            role = _role_of(str(w.cget("bg")))
+            w.configure(bg=T.get(role or "bg", T["bg"]))
+    except Exception:
+        pass
+    for c in w.winfo_children():
+        refresh_theme(c)
+
+
+# ════════════════════════════════════════════════════════════════
+# 2. 公共组件
+# ════════════════════════════════════════════════════════════════
+
+DEFAULT_ENCODINGS = ["utf-8-sig", "utf-8", "gb18030", "cp1251", "cp1252", "latin-1"]
+
+
 
 
 # ─── 单函数主题模板: 亮/暗用同一套样式代码, mode 参数切换 ───
@@ -291,6 +379,37 @@ def path_row(parent, label, var, browse, mono=True):
     return row, e
 
 
+
+
+def _make_pump(root):
+    """线程安全 UI 泵: 后台线程把回调投递到队列, 主线程定时执行."""
+    import queue as _qq
+    _q = _qq.Queue()
+
+    def _ui(fn, *a, **k):
+        _q.put((fn, a, k))
+
+    def _pump():
+        try:
+            while True:
+                fn, a, k = _q.get_nowait()
+                try:
+                    fn(*a, **k)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            root.after(30, _pump)
+        except Exception:
+            pass
+
+    try:
+        root.after(30, _pump)
+    except Exception:
+        pass
+    return _ui
+
 # ═══ 颜色分类总函数: 所有 UI 着色经此获取 ═══
 def color(role):
     """UI 配色总入口 (单函数管所有颜色).
@@ -515,6 +634,7 @@ def log_section(parent, title="日志", height=6, clear=True):
         btn = _ttk.Button(lf, text="清空", width=5)
         btn.pack(side="right", anchor="n")
     log = LogBox(lf, height=height, wrap="word")
+    log._log_role = True  # 标记: 真正的日志框 (hub 集成时隐藏, 结果展示区不隐藏)
     if btn is not None:
         btn.configure(command=log.clear)
     return lf, log
