@@ -1,6 +1,8 @@
 # 插件说明
 
-文件系统工具支持从 `plugins\` 目录加载 Python 插件，用于扩展：加密包解密、新封包/解包格式、右键菜单项、下拉选项。插件只在文件系统工具初始化时扫描一次，修改后需重启工具生效。
+工具集支持从 `plugins\` 目录加载 Python 插件。插件可以扩展：新增 Hub 栏目（工具 Tab）、任意加密包解密、新封包/解包格式、文件系统工具右键菜单项与下拉选项。
+
+插件在 Hub 启动时扫描一次；文件系统工具与 Hub 共用同一份插件实例。修改插件后需重启工具生效。
 
 ## 1. 插件目录与加载规则
 
@@ -17,7 +19,7 @@ STALKER_Toolkit\
 - 文件名以 `_` 开头的文件被忽略；`__pycache__` 和 `.git` 目录被忽略。
 - 插件按相对路径排序后依次加载。
 - 如果 `plugins\enabled.txt` 存在且内容非空，则只加载其中列出的文件。每行一个相对路径（如 `nlc_sqfs.py`），`#` 开头为注释。
-- 单个插件加载或注册失败不会影响工具启动，失败信息会写入日志，并在文件系统工具中弹窗提示。
+- 单个插件加载或注册失败不会影响工具启动，失败信息会写入日志；文件系统工具中会额外弹窗提示。
 
 ## 2. 插件结构
 
@@ -43,30 +45,38 @@ def register(api):
 
 ## 3. API 参考
 
-`register(api)` 收到的 `api` 提供四个注册方法。
+`register(api)` 收到的 `api` 提供五个注册方法。
 
 ### 3.1 api.register_decryptor(check, decrypt)
 
-注册加密包解密器。当文件系统工具加载 `.sq*` 文件且其头部魔数为 `ZZZZ`（即 NLC 类型）时，会按注册顺序依次询问 `check(path)`；第一个返回 `True` 的解密器被采用。如果没有注册解密器接受该文件，工具会回退到 `plugins\nlc_sqfs.py` 模块。
+注册通用加密包解密器。文件系统工具加载文件时，如果标准识别失败（未知 `.sq*` 文件、无法识别的 X-Ray DB 格式等），会按注册顺序依次询问 `check(path)`；第一个返回 `True` 的解密器被采用。解密得到的字节会重新按 SquashFS（`hsqs`/`sqsh`）或 X-Ray DB 解析。
 
 参数：
 
-- `check(path: str) -> bool`：识别该插件能处理的文件。
+- `check(path: str) -> bool`：识别该插件能处理的文件。不要匹配未加密的正常文件，否则可能抢在标准识别前生效。
 - `decrypt(path: str, out_path: str = None) -> bytes | None`：返回解密后的字节；若 `out_path` 非空，应同时写出文件；返回 `None` 表示失败。
 
-示例（NLC sq_base）：
+示例（解密 `.crypt` 文件为 X-Ray DB）：
 
 ```python
 def register(api):
     api.register_decryptor(
-        lambda path: os.path.isfile(path) and open_sq(path) is not None,
-        decrypt_sq,
+        lambda path: path.lower().endswith(".crypt"),
+        decrypt_xdb,
     )
+
+def decrypt_xdb(path, out_path=None):
+    raw = open(path, "rb").read()
+    dec = my_cipher(raw)
+    if out_path:
+        with open(out_path, "wb") as f:
+            f.write(dec)
+    return dec
 ```
 
 ### 3.2 api.register_format(name, handler)
 
-注册新的封包 / 解包格式。注册后，`name` 会出现在文件系统工具的“格式”下拉框中。用户手动选择该格式时，解包 / 打包会调用对应的 handler；`auto` 自动检测不会检测插件格式。
+注册新的封包 / 解包格式。注册后，`name` 会出现在文件系统工具的“格式”下拉框中；`auto` 自动检测也会尝试插件格式（在内置格式识别失败后）。
 
 参数：
 
@@ -145,6 +155,31 @@ def register(api):
     api.register_option("NLC 模式", ["自动", "强制", "关闭"], on_mode_changed)
 ```
 
+### 3.5 api.register_tool(name, builder)
+
+在 Hub 中新增一个栏目（工具 Tab）。
+
+参数：
+
+- `name: str`：Tab 显示名称，不能与内置栏目重名。
+- `builder: callable(parent) -> object | None`：构建函数。Hub 会创建一个 `tk.Frame` 作为 `parent` 传入，插件在 `parent` 上构建自己的 GUI；可返回任意对象（应用实例），Hub 不关心返回值。
+
+示例：
+
+```python
+import tkinter as tk
+from tkinter import ttk
+
+def build(parent):
+    ttk.Label(parent, text="这是我的插件工具").pack(padx=20, pady=20)
+    return None
+
+def register(api):
+    api.register_tool("我的工具", build)
+```
+
+插件工具可以自己创建任意下拉框、右键菜单、按钮并挂接真实逻辑，宿主只负责提供 Tab 容器。
+
 ## 4. 兼容旧式插件
 
 不写 `register(api)`、但暴露 `decrypt_sq(path, out_path=None)` 的插件会被自动注册为解密器，识别函数固定为 `open_sq(path) is not None`（即插件还需提供 `open_sq`）。新插件请使用 `register(api)`。
@@ -162,4 +197,4 @@ def register(api):
 - 插件之间保持独立，不要互相 import。
 - 需要第三方二进制时，放在 `plugins\` 下自己的目录里，并用 `os.path.join(os.path.dirname(__file__), ...)` 定位。
 - 加载失败不会阻断工具启动，但会在日志中记录 `plugin load failed` 并弹窗提示。
-- 插件只在文件系统工具初始化时加载，修改插件后请重启工具。
+- 插件只在 Hub 启动时加载一次，修改插件后请重启工具。

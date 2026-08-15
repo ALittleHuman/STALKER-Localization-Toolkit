@@ -1136,6 +1136,7 @@ class PluginManager:
       * format(name, handler)
       * menu_item(label, callback, location="context")
       * option(label, choices, callback=None)
+      * tool(name, builder)
     """
 
     def __init__(self, plugins_dir, log=None):
@@ -1146,6 +1147,7 @@ class PluginManager:
         self.formats = []
         self.menu_items = []
         self.options = []
+        self.tools = []
         self.load_errors = []
 
     def _enabled_allowlist(self):
@@ -1187,6 +1189,7 @@ class PluginManager:
         self.formats = []
         self.menu_items = []
         self.options = []
+        self.tools = []
         self.load_errors = []
         if not os.path.isdir(self.plugins_dir):
             return self.plugins
@@ -1263,6 +1266,15 @@ class PluginManager:
                     "label": label,
                     "choices": choices,
                     "callback": callback,
+                })
+
+            def register_tool(self, name, builder):
+                """Register a new Hub tab. builder(parent) builds the tab UI."""
+                pm.tools.append({
+                    "plugin": filename,
+                    "info": info,
+                    "name": name,
+                    "builder": builder,
                 })
 
         return Api()

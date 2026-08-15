@@ -32,6 +32,7 @@ from toolkit import (
     fmt_size, read_text_file, parse_xml_texts,
     log_section, vscrollbar, drop_zone,
     load_user_theme, save_user_theme, apply_titlebar,
+    log_to_file,
     _BaseTk, _HAS_DND, DND_FILES,
 )
 from apps.font_pack_app import FontPackApp
@@ -97,24 +98,39 @@ if __name__ == "__main__":
     apply_theme()
     apply_tk_defaults(root)
 
+    # 全局插件宿主：Hub 栏目 + 文件系统工具共用同一份插件实例。
+    shared_plugins = PluginManager(
+        os.path.join(_BASE_DIR, "plugins"),
+        log=lambda msg, tag="info": log_to_file(msg, tag),
+    )
+    shared_plugins.scan()
+    for err in shared_plugins.load_errors[:10]:
+        log_to_file(err, "err")
+
+    def _fs_tool(tab):
+        return FSToolApp(tab, plugins=shared_plugins)
+
     TOOLS = [
-        ("文件系统", FSToolApp),
+        ("文件系统", _fs_tool),
         ("编码转换", ConvertApp),
         ("文本提取", TextExtractApp),
         ("XML校对", XMLCompareApp),
         ("视频转换", VideoOGMApp),
         ("汉化包生成", FontPackApp),
     ]
+    for tool in shared_plugins.tools:
+        name = tool.get("name") or tool.get("info", {}).get("name", "插件")
+        TOOLS.append((name, tool.get("builder")))
 
     def rebuild(nb, apps):
         for tab in nb.tabs():
             nb.forget(tab)
         apps.clear()
-        for label, cls in TOOLS:
+        for label, factory in TOOLS:
             tab = tk.Frame(nb, bg=color("bg"))
             nb.add(tab, text=label)
             try:
-                apps[label] = cls(tab)
+                apps[label] = factory(tab)
             except Exception as e:
                 ttk.Label(tab, text=f"加载失败: {e}", style="Red.TLabel").pack(pady=30)
         apply_theme()

@@ -149,7 +149,7 @@ class Node:
 
 
 class FSToolApp:
-    def __init__(self, master=None):
+    def __init__(self, master=None, plugins=None):
         self.root = master or _BaseTk()
         if master is None:
             self.root.title("STALKER X-Ray FS Tool")
@@ -161,11 +161,14 @@ class FSToolApp:
         self._last_input = ""
         self.db_files = []; self.files_data = []
         self.loaded = {}; self.raws = {}; self.merged = None
-        self.plugins = PluginManager(
-            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugins"),
-            log=self._log_plugin,
-        )
-        self.plugins.scan()
+        if plugins is not None:
+            self.plugins = plugins
+        else:
+            self.plugins = PluginManager(
+                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugins"),
+                log=self._log_plugin,
+            )
+            self.plugins.scan()
         self.running = False
         self._build_ui()
         self._ui = _make_pump(self.root)
@@ -514,21 +517,111 @@ class FSToolApp:
                     self._log("  SquashFS 列表失败 (缺 rdsquashfs?) ", "err")
             elif kind == "nlc":
                 self._load_nlc(path)
+            elif self._try_plugin_decrypt(path):
+                pass
             else:
                 self._log("  无法识别 .sq 文件", "warn")
             return
         raw = load_db(path)
-        if fmt == "auto": fmt = auto_detect(raw)
-        if not fmt or fmt == "sqfs": self._log("  无法自动识别格式", "warn"); return
-        plugin_fmt = next((f for f in self.plugins.formats if f["name"] == fmt), None)
-        if plugin_fmt:
-            entries = plugin_fmt["handler"]["unpack"](raw)
-        else:
-            entries = unpack_db(raw, fmt)
-        self.raws[path] = raw
-        self.loaded[path] = self._build_model(entries, path)
-        nf = sum(1 for e in entries if not e["is_dir"])
-        self._log(f"  {fmt}: {len(entries)} 项, {nf} 文件", "ok")
+        fmt = self.fmt_var.get()
+        entries = None
+        if fmt == "auto":
+            fmt = auto_detect(raw)
+            if not fmt:
+                # auto 模式也尝试插件格式
+                for pf in self.plugins.formats:
+                    try:
+                        entries = pf["handler"]["unpack"](raw)
+                        if entries:
+                            fmt = pf["name"]
+                            break
+                    except Exception:
+                        continue
+        if fmt and fmt != "sqfs":
+            if entries is None:
+                plugin_fmt = next((f for f in self.plugins.formats if f["name"] == fmt), None)
+                if plugin_fmt:
+                    entries = plugin_fmt["handler"]["unpack"](raw)
+                else:
+                    entries = unpack_db(raw, fmt)
+            if not entries:
+                self._log(f"  {fmt}: 解析失败", "warn")
+                return
+            self.raws[path] = raw
+            self.loaded[path] = self._build_model(entries, path)
+            nf = sum(1 for e in entries if not e["is_dir"])
+            self._log(f"  {fmt}: {len(entries)} 项, {nf} 文件", "ok")
+            return
+        # 标准识别失败：交给插件解密器，解密后再按 hsqs / X-Ray DB 解析。
+        if self._try_plugin_decrypt(path):
+            return
+        self._log("  无法自动识别格式", "warn")
+
+    def _try_plugin_decrypt(self, path):
+        """Any file that failed standard recognition is offered to plugin decryptors."""
+        entry = None
+        try:
+            if getattr(self, "plugins", None):
+                entry = self.plugins.find_decryptor(path)
+        except Exception:
+            entry = None
+        if not entry:
+            return False
+        try:
+            raw = entry["decrypt"](path)
+        except Exception as e:
+            self._log(f"  插件解密错误: {e}", "err")
+            return False
+        if not raw:
+            return False
+        return self._load_decrypted(path, raw)
+
+    def _load_decrypted(self, path, raw):
+        """Parse decrypted bytes as SquashFS or X-Ray DB."""
+        if raw[:4] in (b"hsqs", b"sqsh"):
+            import tempfile
+            tf = tempfile.NamedTemporaryFile(suffix=".sqfs", delete=False)
+            try:
+                tf.write(raw); tf.close()
+                entries = sqfs_list(tf.name)
+                if not entries:
+                    self._log("  解密后 SquashFS 列表失败", "err")
+                    return False
+                self.raws[path] = b"DEC:" + tf.name.encode()
+                self.loaded[path] = self._build_model(entries, path)
+                nf = sum(1 for e in entries if not e["is_dir"])
+                self._log(f"  插件解密: SquashFS {len(entries)} 项, {nf} 文件", "ok")
+                return True
+            except Exception as e:
+                self._log(f"  解密后解析失败: {e}", "err")
+                try:
+                    if not tf.closed: tf.close()
+                    os.unlink(tf.name)
+                except Exception:
+                    pass
+                return False
+        fmt = auto_detect(raw)
+        entries = None
+        if not fmt:
+            for pf in self.plugins.formats:
+                try:
+                    entries = pf["handler"]["unpack"](raw)
+                    if entries:
+                        fmt = pf["name"]
+                        break
+                except Exception:
+                    continue
+        if fmt:
+            if entries is None:
+                entries = unpack_db(raw, fmt)
+            if entries:
+                self.raws[path] = raw
+                self.loaded[path] = self._build_model(entries, path)
+                nf = sum(1 for e in entries if not e["is_dir"])
+                self._log(f"  插件解密: {fmt} {len(entries)} 项, {nf} 文件", "ok")
+                return True
+        self._log("  解密后数据无法识别", "err")
+        return False
 
     def _check_all(self):
         """全选: 直接勾选所有已加载包 (包含暂未合并的节点)."""

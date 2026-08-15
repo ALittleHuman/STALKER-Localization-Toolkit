@@ -80,7 +80,7 @@ python download_ffmpeg.py
 
 ## 插件系统
 
-文件系统工具会扫描 `plugins\` 目录加载 Python 插件，可扩展：加密包解密、新格式、右键菜单项、下拉选项。插件写法与加载规则详见 [PLUGINS.md](PLUGINS.md)。
+工具集启动时会扫描 `plugins\` 目录加载 Python 插件，可扩展：新增 Hub 栏目（工具 Tab）、任意加密包解密、新封包/解包格式、文件系统工具右键菜单项与下拉选项。插件写法与加载规则详见 [PLUGINS.md](PLUGINS.md)。
 
 ## 测试
 
