@@ -144,6 +144,12 @@ def build(out_dir):
         os.makedirs(d, exist_ok=True)
         print(f"Created {d}")
 
+    # Keep a resident runtime.log in logs/ so the directory is never empty.
+    runtime_log = os.path.join(bundle_dir, "logs", "runtime.log")
+    if not os.path.isfile(runtime_log):
+        with open(runtime_log, "w", encoding="utf-8") as f:
+            f.write("")
+
     for exe in ("ffmpeg.exe", "ffprobe.exe"):
         src = os.path.join(BASE, exe)
         if os.path.isfile(src):
