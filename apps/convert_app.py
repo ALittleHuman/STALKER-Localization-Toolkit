@@ -728,18 +728,23 @@ class ConvertApp(ttk.Frame):
 
     # ------------------------------ 核心转换 ------------------------------
     def _get_source_encoding(self, raw_data):
-        """获取源编码 (可靠性优先):
-        1. 严格 utf-8 解码测试 (多字节检测第一，不信任声明)
-        2. XML 声明 (仅作为单字节编码提示)
-        3. 手动指定 → 4. cp1251 兜底."""
-        # 1. 多字节检测第一: 内容严格可被 UTF-8 解码，就按 UTF-8 读。
+        """获取源编码 (检测 → 手动 → 自动):
+        1. 多字节检测: 严格 UTF-8 解码成功即按 UTF-8。
+        2. 手动指定 (非 auto)。
+        3. 自动: XML 声明参考 → 1251 兜底。"""
+        # 1. 检测
         try:
             raw_data.decode("utf-8")
             return "utf-8"
         except UnicodeDecodeError:
             pass
 
-        # 2. 单字节编码: XML 声明仅作参考。
+        # 2. 手动
+        specified_enc = self._snap['source_enc'].strip().lower()
+        if specified_enc and specified_enc != "auto":
+            return specified_enc
+
+        # 3. 自动
         m = re.search(rb'<\?xml[^>]*encoding\s*=\s*["\']([^"\']+)["\']',
                       raw_data[:500], re.I | re.S)
         if m:
@@ -750,12 +755,6 @@ class ConvertApp(ttk.Frame):
                 return "windows-1252"
             if decl_enc:
                 return decl_enc
-
-        # 3. 手动指定
-        specified_enc = self._snap['source_enc'].strip().lower()
-        if specified_enc and specified_enc != "auto":
-            return specified_enc
-        # 4. cp1251 兜底 (STALKER 俄语场景)
         return "windows-1251"
 
     def get_files(self):
