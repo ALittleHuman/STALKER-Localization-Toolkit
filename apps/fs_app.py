@@ -161,7 +161,7 @@ class FSToolApp:
         self.db_files = []; self.files_data = []
         self.loaded = {}; self.raws = {}; self.merged = None
         self.plugins = PluginManager(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugins"),
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugins"),
             log=self._log_plugin,
         )
         self.plugins.scan()
@@ -169,6 +169,11 @@ class FSToolApp:
         self._build_ui()
         self._ui = _make_pump(self.root)
         self.input_var.trace_add("write", self._on_input_change)
+        if self.plugins.load_errors:
+            for e in self.plugins.load_errors[:10]:
+                self._log(e, "err")
+            errs = "\n".join(self.plugins.load_errors[:10])
+            self.root.after(600, lambda: messagebox.showwarning("插件加载失败", errs))
 
     # ═══ Theme ═══
     def _setup_theme(self):
@@ -202,6 +207,9 @@ class FSToolApp:
                 continue
             var = tk.StringVar(value=choices[0])
             self.plugin_option_vars[label] = var
+            cb = opt.get("callback")
+            if callable(cb):
+                var.trace_add("write", lambda *a, cb=cb, var=var: cb(var.get()))
             opt_row = ttk.Frame(self.root); opt_row.pack(fill="x", padx=P, pady=(0,4))
             ttk.Label(opt_row, text=label, width=10).pack(side="left")
             om = tk.OptionMenu(opt_row, var, *choices)
@@ -253,6 +261,8 @@ class FSToolApp:
             self.db_ctree.get().drop_target_register(DND_FILES)
             self.db_ctree.get().dnd_bind("<<Drop>>", self._on_drop_db_list)
         for mi in self.plugins.menu_items:
+            if mi.get("location", "context") != "context":
+                continue
             self.db_ctree._ctx.add_separator()
             self.db_ctree._ctx.add_command(label=mi["label"], command=mi["callback"])
 

@@ -5,6 +5,7 @@ STALKER 汉化工具集 — 公共组件库
 公用日志 LogBox、通用 CanvasTree 文件树。个性化设置只需改 THEMES。
 """
 import os
+import re
 import time
 import tkinter as tk
 import subprocess
@@ -1027,15 +1028,19 @@ class SplitPane(ttk.Panedwindow):
 class PluginManager:
     """Scan a plugins/ directory and host extension points.
 
-    A plugin is a Python file in the plugin directory that defines
-    PLUGIN_INFO and register(api). It may also expose plain functions for
-    backward compatibility (see nlc_sqfs.py).
+    A plugin is a Python file in the plugin directory (or a direct
+    subdirectory) that defines PLUGIN_INFO and register(api). It may
+    also expose plain functions for backward compatibility.
+
+    Optional allow-list: plugins/enabled.txt
+        One plugin file name per line (# comments ignored). If the file
+        exists and is non-empty, only the listed plugins are loaded.
 
     Extension points:
-      * decryptor(check, decrypt): special-encryption archive decryption
-      * format(name, handler): additional DB/archive format
-      * menu_item(label, callback): extra item for the FS tool DB list menu
-      * option(label, choices): extra option for a dropdown
+      * decryptor(check, decrypt)
+      * format(name, handler)
+      * menu_item(label, callback, location="context")
+      * option(label, choices, callback=None)
     """
 
     def __init__(self, plugins_dir, log=None):
@@ -1046,37 +1051,74 @@ class PluginManager:
         self.formats = []
         self.menu_items = []
         self.options = []
+        self.load_errors = []
+
+    def _enabled_allowlist(self):
+        path = os.path.join(self.plugins_dir, "enabled.txt")
+        if not os.path.isfile(path):
+            return None
+        names = []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        names.append(line)
+        except Exception:
+            return None
+        return names if names else None
+
+    def _iter_plugin_files(self):
+        """Yield (relative_name, absolute_path) for all loadable plugins."""
+        allow = self._enabled_allowlist()
+        files = []
+        for dp, dn, fn in os.walk(self.plugins_dir):
+            dn[:] = [d for d in dn if d not in ("__pycache__", ".git")]
+            for f in fn:
+                if not f.endswith(".py") or f.startswith("_"):
+                    continue
+                full = os.path.join(dp, f)
+                rel = os.path.relpath(full, self.plugins_dir).replace("\\", "/")
+                files.append((rel, full))
+        files.sort(key=lambda x: x[0])
+        if allow is None:
+            return files
+        return [(rel, full) for rel, full in files if rel in allow]
 
     def scan(self):
-        """Import all .py files in plugins_dir and call their register()."""
+        """Import all plugin files and call their register()."""
+        self.plugins = []
+        self.decryptors = []
+        self.formats = []
+        self.menu_items = []
+        self.options = []
+        self.load_errors = []
         if not os.path.isdir(self.plugins_dir):
             return self.plugins
-        try:
-            entries = sorted(os.listdir(self.plugins_dir))
-        except OSError:
-            return self.plugins
-        for fn in entries:
-            if not fn.endswith(".py") or fn.startswith("_"):
-                continue
-            path = os.path.join(self.plugins_dir, fn)
-            modname = f"toolkit_plugin_{fn[:-3]}"
+
+        for rel, path in self._iter_plugin_files():
+            modname = "toolkit_plugin_" + re.sub(r"[^0-9A-Za-z_]", "_", rel[:-3])
             try:
                 import importlib.util
                 spec = importlib.util.spec_from_file_location(modname, path)
                 mod = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(mod)
             except Exception as e:
-                self.log(f"plugin load failed: {fn}: {e}", "err")
+                msg = f"plugin load failed: {rel}: {e}"
+                self.load_errors.append(msg)
+                self.log(msg, "err")
                 continue
             info = getattr(mod, "PLUGIN_INFO", {})
-            api = self._make_api(fn, info)
+            api = self._make_api(rel, info)
             registered = False
             if hasattr(mod, "register"):
                 try:
                     mod.register(api)
                     registered = True
                 except Exception as e:
-                    self.log(f"plugin register failed: {fn}: {e}", "err")
+                    msg = f"plugin register failed: {rel}: {e}"
+                    self.load_errors.append(msg)
+                    self.log(msg, "err")
             if not registered:
                 # backward compatibility: bare functions in the plugin
                 if hasattr(mod, "decrypt_sq"):
@@ -1085,9 +1127,9 @@ class PluginManager:
                         mod.decrypt_sq,
                     )
                     registered = True
-            self.plugins.append({"file": fn, "info": info, "module": mod,
+            self.plugins.append({"file": rel, "info": info, "module": mod,
                                  "registered": registered})
-            self.log(f"plugin loaded: {fn}", "ok")
+            self.log(f"plugin loaded: {rel}", "ok")
         return self.plugins
 
     def _make_api(self, filename, info):
@@ -1110,25 +1152,28 @@ class PluginManager:
                     "handler": handler,
                 })
 
-            def register_menu_item(self, label, callback):
+            def register_menu_item(self, label, callback, location="context"):
                 pm.menu_items.append({
                     "plugin": filename,
                     "info": info,
                     "label": label,
                     "callback": callback,
+                    "location": location,
                 })
 
-            def register_option(self, label, choices):
+            def register_option(self, label, choices, callback=None):
                 pm.options.append({
                     "plugin": filename,
                     "info": info,
                     "label": label,
                     "choices": choices,
+                    "callback": callback,
                 })
 
         return Api()
 
-    def find_decryptor(self, path):
+
+def find_decryptor(self, path):
         """Return the first registered decryptor that accepts path, else None."""
         for d in self.decryptors:
             try:
