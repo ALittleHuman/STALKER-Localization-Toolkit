@@ -343,6 +343,12 @@ class Converter:
 
         vcodec = self._pick_video_encoder(ref_vcodec)
 
+        # 先解析源文件信息：用于判断是否有音轨，以及后续缩放/帧率/进度
+        src_info, _ = parse_video_info(input_path, self.ffprobe)
+        duration_sec = 0.0
+        if src_info and src_info.duration > 0:
+            duration_sec = src_info.duration
+
         cmd = [self.ffmpeg, "-y", "-i", input_path]
 
         # 视频编码：参考有码率就匹配，没有就默认
@@ -359,7 +365,6 @@ class Converter:
         need_scale = ref_w > 0 and ref_h > 0
         need_fps = ref_fps > 0
         if need_scale or need_fps:
-            src_info, _ = parse_video_info(input_path, self.ffprobe)
             if need_scale and src_info and src_info.video:
                 if src_info.video.width == ref_w and src_info.video.height == ref_h:
                     need_scale = False
@@ -373,12 +378,16 @@ class Converter:
         if vf_parts:
             cmd += ["-vf", ",".join(vf_parts)]
 
-        cmd += [
-            "-c:a", "libvorbis",
-            "-b:a", str(ref_abitrate),
-            "-ar", str(ref_ar),
-            "-ac", str(ref_ac),
-        ]
+        # 音频轨：源无音轨则明确禁用，避免 ffmpeg 报错；有音轨则按参考参数还原
+        if src_info and src_info.audio:
+            cmd += [
+                "-c:a", "libvorbis",
+                "-b:a", str(ref_abitrate),
+                "-ar", str(ref_ar),
+                "-ac", str(ref_ac),
+            ]
+        else:
+            cmd += ["-an"]
         cmd += ["-f", "ogg", output_path]
 
         try:
@@ -390,20 +399,18 @@ class Converter:
         except OSError as e:
             return False, f"启动 ffmpeg 失败: {e}"
 
-        duration_sec = 0.0
-        if reference_info and reference_info.duration > 0:
-            duration_sec = reference_info.duration
-        else:
-            info, _ = parse_video_info(input_path, self.ffprobe)
-            if info and info.duration > 0:
-                duration_sec = info.duration
-
         time_pat = re.compile(r"time=(\d+):(\d+):(\d+)\.(\d+)")
         stderr_lines: list[str] = []
         for line in self._proc.stderr:
             stderr_lines.append(line)
             if self._cancelled:
                 self._proc.terminate()
+                self._proc.wait()
+                if os.path.isfile(output_path):
+                    try:
+                        os.remove(output_path)
+                    except Exception:
+                        pass
                 return False, "已取消"
             m = time_pat.search(line)
             if m and duration_sec > 0 and progress_callback:
@@ -413,6 +420,11 @@ class Converter:
 
         ret = self._proc.wait()
         if self._cancelled:
+            if os.path.isfile(output_path):
+                try:
+                    os.remove(output_path)
+                except Exception:
+                    pass
             return False, "已取消"
 
         # 收集错误日志
@@ -424,16 +436,14 @@ class Converter:
         if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
             return False, "输出文件为空"
 
-        # 验证输出：检查时长和帧数
+        # 验证输出：较长视频检查时长/帧数完整性，短视频只确认有视频轨
         out_info, _ = parse_video_info(output_path, self.ffprobe)
-        if out_info and duration_sec > 0:
+        if out_info is None or out_info.video is None:
+            return False, f"输出文件无法解析为视频\n{err_tail[-400:]}"
+        if duration_sec >= 1.0:
             ratio = out_info.duration / duration_sec if duration_sec > 0 else 0
-            # 估算帧数
             expected_frames = int(duration_sec * (ref_fps if ref_fps > 0 else 30))
-            actual_frames = 0
-            if out_info.video:
-                # 从 duration * fps 推算实际帧数
-                actual_frames = int(out_info.video.fps * out_info.duration) if out_info.video.fps > 0 else 0
+            actual_frames = int(out_info.video.fps * out_info.duration) if out_info.video.fps > 0 else 0
             if ratio < 0.8 or (expected_frames > 0 and actual_frames > 0 and actual_frames < expected_frames * 0.8):
                 return False, (
                     f"输出不完整！\n"
