@@ -108,16 +108,22 @@ def apply_titlebar(root, mode=None):
         import ctypes
         if mode is None:
             mode = CURRENT_MODE
+        # Tk 的 winfo_id() 返回的是客户区子窗口句柄，真正的顶层窗口
+        # （带标题栏）是它的父窗口。对子窗口调用 DwmSetWindowAttribute
+        # 会返回 ERROR_INVALID_HANDLE (0x80070006)，导致标题栏不变色。
         hwnd = root.winfo_id()
+        user32 = ctypes.windll.user32
+        top = user32.GetParent(hwnd) or hwnd
         value = 1 if mode == "dark" else 0
-        # DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (Windows 11/10 1903+)
-        try:
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                hwnd, 20, ctypes.byref(ctypes.c_int(value)), ctypes.sizeof(ctypes.c_int))
-        except Exception:
-            # DWMWA_USE_IMMERSIVE_DARK_MODE 旧值 = 19
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                hwnd, 19, ctypes.byref(ctypes.c_int(value)), ctypes.sizeof(ctypes.c_int))
+        dwm = ctypes.windll.dwmapi
+        # DWMWA_USE_IMMERSIVE_DARK_MODE: 20 = Windows 11/10 1903+;
+        # 19 = 旧版 1903 之前。DwmSetWindowAttribute 失败时返回 HRESULT，
+        # 不会抛 Python 异常，所以必须检查返回值并回退。
+        hr = dwm.DwmSetWindowAttribute(
+            top, 20, ctypes.byref(ctypes.c_int(value)), ctypes.sizeof(ctypes.c_int))
+        if hr != 0:
+            dwm.DwmSetWindowAttribute(
+                top, 19, ctypes.byref(ctypes.c_int(value)), ctypes.sizeof(ctypes.c_int))
     except Exception:
         pass
 
