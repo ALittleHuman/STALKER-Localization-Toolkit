@@ -108,6 +108,15 @@ def main():
         try:
             importlib.import_module(m)
             print(f"  OK {m}")
+        except ModuleNotFoundError as e:
+            # nlc_sqfs is a closed-source plugin kept out of the repository.
+            if m == "plugins.nlc_sqfs" and not os.path.isfile(
+                os.path.join(HERE, "plugins", "nlc_sqfs.py")
+            ):
+                print(f"  SKIP {m} (closed-source plugin not in repository)")
+            else:
+                print(f"  FAIL {m}: {e}")
+                ok = False
         except Exception as e:
             print(f"  FAIL {m}: {e}")
             ok = False
