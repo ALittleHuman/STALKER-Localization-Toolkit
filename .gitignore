@@ -12,3 +12,6 @@ logs/*
 ffmpeg.exe
 ffprobe.exe
 deps/
+
+# 用户本地主题配置
+user.ltx

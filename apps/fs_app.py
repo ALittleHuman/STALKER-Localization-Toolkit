@@ -694,7 +694,7 @@ class FSToolApp:
         }
 
     def _pack_output_basename(self):
-        """返回封包输出文件名（不含扩展名）：输入目录名，或待封包的首个顶层目录/文件。"""
+        """返回封包输出文件名（不含扩展名），无法可靠推断时返回 None。"""
         inp = self.input_var.get().strip()
         if inp and os.path.isdir(inp):
             return os.path.basename(os.path.normpath(inp))
@@ -709,7 +709,7 @@ class FSToolApp:
             if len(self.files_data) == 1 and "/" not in self.files_data[0][0]:
                 return os.path.splitext(top)[0]
             return top
-        return "packed"
+        return None
 
     def _pack(self):
         if self.running: return
@@ -717,12 +717,18 @@ class FSToolApp:
         fmt = self.pack_fmt_var.get()
         out = self.pack_out_var.get().strip()
         ext = ".sqfs" if fmt == "sqfs" else ".db"
-        name = f"{self._pack_output_basename()}{ext}"
+        base = self._pack_output_basename()
         if not out:
-            out = filedialog.asksaveasfilename(title="保存", defaultextension=ext, initialfile=name)
+            initial = f"{base}{ext}" if base else f"packed{ext}"
+            out = filedialog.asksaveasfilename(title="保存", defaultextension=ext, initialfile=initial)
             if not out: return; self.pack_out_var.set(out)
         elif os.path.isdir(out):
-            out = os.path.join(out, name)
+            if base:
+                out = os.path.join(out, f"{base}{ext}")
+            else:
+                out = filedialog.asksaveasfilename(title="保存", defaultextension=ext,
+                                                   initialdir=out, initialfile=f"packed{ext}")
+                if not out: return; self.pack_out_var.set(out)
         else:
             if not os.path.splitext(out)[1]:
                 out = out + ext

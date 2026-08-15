@@ -31,6 +31,7 @@ from toolkit import (
     _make_pump, _role_of, refresh_theme, DEFAULT_ENCODINGS,
     fmt_size, read_text_file, parse_xml_texts,
     log_section, vscrollbar, drop_zone,
+    load_user_theme, save_user_theme,
     _BaseTk, _HAS_DND, DND_FILES,
 )
 from apps.font_pack_app import FontPackApp
@@ -164,7 +165,9 @@ if __name__ == "__main__":
         theme_var = tk.StringVar(value="暗色" if mode == "dark" else "亮色")
 
         def on_theme(val):
-            apply_theme("light" if val == "亮色" else "dark")
+            mode = "light" if val == "亮色" else "dark"
+            apply_theme(mode)
+            save_user_theme(mode)
             root.configure(bg=color("bg"))
             refresh_theme(root)
 
@@ -200,5 +203,5 @@ if __name__ == "__main__":
         rebuild(nb, apps)
         attach_log(apps, g_log)
 
-    build_hub("dark")
+    build_hub(load_user_theme())
     root.mainloop()

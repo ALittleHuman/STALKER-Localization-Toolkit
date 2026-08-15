@@ -69,6 +69,36 @@ T = palette("dark")
 # 当前主题模式 (hub 切换后重建工具时, 工具内部 apply_theme() 沿用此模式)
 CURRENT_MODE = "dark"
 
+
+def user_config_path():
+    """用户配置文件路径: 工具根目录/user.ltx."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "user.ltx")
+
+
+def load_user_theme():
+    """读取 user.ltx 中保存的主题, 缺省 dark."""
+    try:
+        with open(user_config_path(), "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("mode"):
+                    val = line.split("=", 1)[1].strip().lower()
+                    if val in ("dark", "light"):
+                        return val
+    except Exception:
+        pass
+    return "dark"
+
+
+def save_user_theme(mode):
+    """保存主题到 user.ltx."""
+    try:
+        with open(user_config_path(), "w", encoding="utf-8") as f:
+            f.write("[theme]\nmode = " + mode + "\n")
+    except Exception:
+        pass
+
+
 _BG_ROLES = ("bg", "surface", "surface2", "entry_bg", "selected")
 
 
