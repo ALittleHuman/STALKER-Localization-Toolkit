@@ -841,7 +841,18 @@ class ConvertApp(ttk.Frame):
 
             if src_enc == target:
                 if self._snap['output_dir']:
-                    shutil.copy2(path, out_path)
+                    if target == "utf-8":
+                        # 源已是 UTF-8，但可能带 BOM；统一写成无 BOM UTF-8
+                        content = raw.decode("utf-8-sig" if raw.startswith(b"\xef\xbb\xbf") else "utf-8",
+                                            errors="replace")
+                        content = re.sub(r"<\?xml[^>]*\?>",
+                                         lambda m: re.sub(r"(encoding\s*=\s*[\"'])[^\"']*([\"'])",
+                                                         r"\1utf-8\2", m.group(0), flags=re.I),
+                                         content, count=1, flags=re.I)
+                        with open(out_path, "w", encoding="utf-8", errors="replace", newline="") as f:
+                            f.write(content)
+                    else:
+                        shutil.copy2(path, out_path)
                 self.log(f"[跳过] {os.path.basename(path)} | 源={enc_source}，已是目标编码")
                 self.convert_stats['skipped'] += 1
                 return "skipped"

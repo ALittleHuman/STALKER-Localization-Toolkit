@@ -518,14 +518,30 @@ def build_package(game, lang, xml_dir, font_path, out_dir,
             f.write(ini)
         L(f"  ui_font_{size}{suffix}.dds ({tex_w}x{tex_h}, 占用 {max_y}px 高)")
 
-    # XML
+    # XML: 统一转为无 BOM UTF-8（汉化包内 XML 一律 utf-8）
+    import re as _re
     n = 0
     for fn in sorted(os.listdir(xml_dir)):
         if fn.lower().endswith(".xml"):
-            import shutil
-            shutil.copy2(os.path.join(xml_dir, fn), os.path.join(text_dir, fn))
+            src = os.path.join(xml_dir, fn)
+            dst = os.path.join(text_dir, fn)
+            with open(src, "rb") as f:
+                raw = f.read()
+            if raw.startswith(b"\xef\xbb\xbf"):
+                raw = raw[3:]
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text = raw.decode("windows-1251", errors="replace")
+            # 更新 XML 声明为 utf-8（无 BOM）
+            text = _re.sub(r"<\?xml[^>]*\?>",
+                           lambda m: _re.sub(r'(encoding\s*=\s*["\'])[^"\']*(["\'])',
+                                             r"\1utf-8\2", m.group(0), flags=_re.I),
+                           text, count=1, flags=_re.I)
+            with open(dst, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
             n += 1
-    L(f"XML: 复制 {n} 个文件 → {cfg_dir}/text/{lang}/")
+    L(f"XML: 写入 {n} 个文件 → {cfg_dir}/text/{lang}/ (无 BOM UTF-8)")
 
     # fonts.ltx + localization.ltx
     with open(os.path.join(out_gd, cfg_dir, "fonts.ltx"), "w", encoding="utf-8") as f:
