@@ -129,10 +129,20 @@ def apply_titlebar(root, mode=None):
         # 19 = 旧版 1903 之前。DwmSetWindowAttribute 失败时返回 HRESULT，
         # 不会抛 Python 异常，所以必须检查返回值并回退。
         hr = dwm.DwmSetWindowAttribute(
-            top, 20, ctypes.byref(ctypes.c_int(value)), ctypes.sizeof(ctypes.c_int))
+              top, 20, ctypes.byref(ctypes.c_int(value)), ctypes.sizeof(ctypes.c_int))
         if hr != 0:
-            dwm.DwmSetWindowAttribute(
+            hr = dwm.DwmSetWindowAttribute(
                 top, 19, ctypes.byref(ctypes.c_int(value)), ctypes.sizeof(ctypes.c_int))
+        if hr == 0:
+            # 强制刷新非客户区，让 DWM 立即用新属性重绘标题栏。
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_NOZORDER = 0x0004
+            SWP_NOACTIVATE = 0x0010
+            SWP_FRAMECHANGED = 0x0020
+            user32.SetWindowPos(
+                top, 0, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)
     except Exception:
         pass
 
