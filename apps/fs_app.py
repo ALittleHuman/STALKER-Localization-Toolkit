@@ -179,6 +179,34 @@ class FSToolApp:
             errs = "\n".join(self.plugins.load_errors[:10])
             self.root.after(600, lambda: messagebox.showwarning("插件加载失败", errs))
 
+    # ═══ Plugin callback helpers ═══
+    def _invoke_plugin_menu_cb(self, cb):
+        """调用插件菜单回调：优先传宿主 app，兼容旧式无参回调。"""
+        try:
+            import inspect
+            sig = inspect.signature(cb)
+            if len(sig.parameters) >= 1:
+                cb(self)
+            else:
+                cb()
+        except (TypeError, ValueError):
+            cb()
+
+    def _invoke_plugin_option_cb(self, cb, value):
+        """调用插件选项回调：优先传 (value, app)，兼容旧式 value / 无参回调。"""
+        try:
+            import inspect
+            sig = inspect.signature(cb)
+            n = len(sig.parameters)
+            if n >= 2:
+                cb(value, self)
+            elif n == 1:
+                cb(value)
+            else:
+                cb()
+        except (TypeError, ValueError):
+            cb(value)
+
     # ═══ Theme ═══
     def _setup_theme(self):
         """统一配色模板: 全部由 apply_theme 提供."""
@@ -213,7 +241,7 @@ class FSToolApp:
             self.plugin_option_vars[label] = var
             cb = opt.get("callback")
             if callable(cb):
-                var.trace_add("write", lambda *a, cb=cb, var=var: cb(var.get()))
+                var.trace_add("write", lambda *a, cb=cb, var=var: self._invoke_plugin_option_cb(cb, var.get()))
             opt_row = ttk.Frame(self.root); opt_row.pack(fill="x", padx=P, pady=(0,4))
             ttk.Label(opt_row, text=label, width=10).pack(side="left")
             om = tk.OptionMenu(opt_row, var, *choices)
@@ -268,7 +296,7 @@ class FSToolApp:
             if mi.get("location", "context") != "context":
                 continue
             self.db_ctree._ctx.add_separator()
-            self.db_ctree._ctx.add_command(label=mi["label"], command=mi["callback"])
+            self.db_ctree._ctx.add_command(label=mi["label"], command=lambda cb=mi["callback"]: self._invoke_plugin_menu_cb(cb))
 
     def _build_file_panel(self, pan):
         right = ttk.LabelFrame(pan, text="包内文件", padding=4)

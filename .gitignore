@@ -11,7 +11,6 @@ logs/*
 # 大体积运行依赖，不在 Git 仓库中
 ffmpeg.exe
 ffprobe.exe
-deps/
 
 # 用户配置文件
 user.ltx

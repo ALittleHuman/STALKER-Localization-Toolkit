@@ -122,20 +122,20 @@ def register(api):
 参数：
 
 - `label: str`：菜单文字。
-- `callback: callable`：点击时调用，无参数。
+- `callback: callable`：点击时调用。宿主会优先以 `callback(app)` 调用（`app` 为文件系统工具实例），如果回调不接受参数则回退为 `callback()`。
 - `location: str`：目前只支持 `"context"`（右键菜单）。
 
 渲染位置：文件系统工具左侧“DB 文件列表”（`CanvasTree`）的右键菜单。每个插件菜单项前会自动加一条分隔线。
 
-调用方式：用户点击菜单项时，宿主执行 `callback()`，不传任何参数。
+调用方式：用户点击菜单项时，宿主优先执行 `callback(app)`，其中 `app` 是文件系统工具实例，可访问 `app.loaded`、`app.raws`、`app.db_ctree`、`app.plugin_option()` 等成员；旧式无参回调仍可执行。
 
-当前限制：`callback` 拿不到宿主上下文（如当前选中的 DB 文件、已加载的数据、文件系统工具实例）。插件只能通过自己的闭包/全局状态保存信息。如果需要操作宿主数据，请使用 `register_tool` 自建界面，或等后续版本提供上下文参数。
+当前限制：`callback` 的参数为文件系统工具实例（无具体菜单上下文，如当前右键选中的节点）；如需更细的上下文，可在回调内通过 `app.db_ctree` 自行获取。
 
 示例：
 
 ```python
-def my_action():
-    print("menu clicked")
+def my_action(app):
+    print("menu clicked", app.loaded)
 
 def register(api):
     api.register_menu_item("执行我的操作", my_action)
@@ -149,11 +149,11 @@ def register(api):
 
 - `label: str`：选项名称，同时作为读取当前值的键。
 - `choices: list[str]`：可选值列表，第一项为默认值。
-- `callback: callable | None`：切换时回调，参数为新值字符串；可选。
+- `callback: callable | None`：切换时回调。宿主会优先以 `callback(value, app)` 调用（`app` 为文件系统工具实例），旧式回调则回退为 `callback(value)` 或 `callback()`；可选。
 
 渲染方式：每个选项生成一行 `标签(label) + OptionMenu(choices)`，默认选中 `choices[0]`。
 
-调用方式：用户切换选项时，宿主通过 `StringVar.trace_add("write", ...)` 触发 `callback(新值字符串)`。
+调用方式：用户切换选项时，宿主通过 `StringVar.trace_add("write", ...)` 触发 `callback(新值字符串, app)`，旧式回调兼容 `callback(新值字符串)`。
 
 当前限制：
 
@@ -166,7 +166,7 @@ def register(api):
 ```python
 current_mode = "自动"
 
-def on_mode_changed(value):
+def on_mode_changed(value, app=None):
     global current_mode
     current_mode = value
     print("mode =", value)

@@ -91,7 +91,7 @@ if __name__ == "__main__":
     except Exception:
         pass
     root = _BaseTk()
-    root.title("STALKER 汉化工具集")
+    root.title("STALKER Localization Toolkit 1.0.0")
     root.geometry("1280x860")
     root.minsize(1024, 700)
     root.configure(bg=T["bg"])
