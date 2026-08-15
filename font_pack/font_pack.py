@@ -461,10 +461,16 @@ def render_font(chars, font_path, size, x2, fmt):
                 glyph = Image.frombytes("L", mask.size, bytes(mask)).crop(mb)
                 if S > 1:
                     glyph = glyph.resize((gw, gh), Image.LANCZOS)
-                # 字形在采样框内居中，避免字体 bbox 的 left/top
-                # 让大字号字形整体偏向右下。
-                draw_x = x + max(0, (rw - gw) // 2)
-                draw_y = y + max(0, (cell_h - gh) // 2)
+                if unicodedata.category(ch).startswith(("P", "S")):
+                    # 标点/符号保持字体自然位置（基线对齐），不居中。
+                    top = bbox[1] // S
+                    left = bbox[0] // S
+                    draw_x = x + left
+                    draw_y = y + top
+                else:
+                    # 普通字符在采样框内居中，避免大字号整体偏向右下。
+                    draw_x = x + max(0, (rw - gw) // 2)
+                    draw_y = y + max(0, (cell_h - gh) // 2)
                 canvas.paste(glyph, (draw_x, draw_y))
         ini.append(f"{ord(ch):05d}= {x}, {y}, {x + rw}, {y + cell_h}")
 
