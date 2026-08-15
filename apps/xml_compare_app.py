@@ -25,6 +25,7 @@ from toolkit import (
     fmt_size, read_text_file, parse_xml_texts,
     log_section, vscrollbar, drop_zone,
     _BaseTk, _HAS_DND, DND_FILES,
+    log_to_file, errbox,
 )
 
 def _fix_entities(raw: bytes) -> bytes:
@@ -53,6 +54,9 @@ def read_file_text(filepath: Path) -> str:
 
 
 # ── 模式 1：行数/ID 统计 ──────────────────
+
+ID_PATTERN = re.compile(r"""\bid\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+
 
 def parse_file(filepath: Path) -> tuple[int, Counter]:
     text = read_file_text(filepath)
@@ -480,10 +484,10 @@ class XMLCompareApp:
             messagebox.showwarning("路径缺失", "请先选择两个文件夹。")
             return
         if not Path(pa).is_dir():
-            messagebox.showerror("路径无效", f"文件夹 A 不存在:\n{pa}")
+            errbox("路径无效", f"文件夹 A 不存在:\n{pa}")
             return
         if not Path(pb).is_dir():
-            messagebox.showerror("路径无效", f"文件夹 B 不存在:\n{pb}")
+            errbox("路径无效", f"文件夹 B 不存在:\n{pb}")
             return
 
         self.running = True
@@ -572,7 +576,7 @@ class XMLCompareApp:
         self.running = False
         self.btn_compare.config(state="normal", text="开始比较")
         self.lbl_status.config(text="出错", fg=color("red"))
-        messagebox.showerror("比较出错", msg)
+        errbox("比较出错", msg)
 
     def _refresh_tree(self):
         self.tree.delete(*self.tree.get_children())

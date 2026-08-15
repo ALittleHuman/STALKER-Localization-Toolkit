@@ -11,7 +11,7 @@ import tkinter as tk
 import subprocess
 import sys
 
-from tkinter import ttk, filedialog
+from tkinter import ttk, filedialog, messagebox
 
 # tkinterdnd2 可选 (拖拽)
 try:
@@ -100,8 +100,27 @@ def save_user_theme(mode):
         pass
 
 
+def log_to_file(msg, tag="error"):
+    """Append a timestamped line to logs/runtime.log for tracing."""
+    try:
+        logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+        os.makedirs(logs_dir, exist_ok=True)
+        path = os.path.join(logs_dir, "runtime.log")
+        line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [{tag}] {msg}\n"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
+
 _BG_ROLES = ("bg", "surface", "surface2", "entry_bg", "selected")
 
+
+
+def errbox(title, msg):
+    """Error dialog that also writes into logs/runtime.log."""
+    log_to_file(msg, "error")
+    messagebox.showerror(title, msg)
 
 def _role_of(color_val):
     """根据当前颜色值反推角色 (仅背景类, 避免与前景/滚动条色冲突导致切主题错位)."""

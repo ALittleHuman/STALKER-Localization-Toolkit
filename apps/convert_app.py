@@ -25,6 +25,7 @@ from toolkit import (
     fmt_size, read_text_file, parse_xml_texts,
     log_section, vscrollbar, drop_zone,
     _BaseTk, _HAS_DND, DND_FILES,
+    log_to_file, errbox,
 )
 
 class ConvertApp(ttk.Frame):
@@ -496,7 +497,7 @@ class ConvertApp(ttk.Frame):
                 self.log(f"日志已导出到：{filepath}")
                 self._ui(messagebox.showinfo, "成功", f"日志已保存到：\n{filepath}")
         except Exception as e:
-            self._ui(messagebox.showerror, "错误", f"导出失败：{str(e)}")
+            self._ui(errbox, "错误", f"导出失败：{str(e)}")
 
     def export_stats(self):
         """导出统计信息"""
@@ -533,7 +534,7 @@ class ConvertApp(ttk.Frame):
                 self.log(f"统计已导出到：{filepath}")
                 self._ui(messagebox.showinfo, "成功", f"统计已保存到：\n{filepath}")
         except Exception as e:
-            self._ui(messagebox.showerror, "错误", f"导出失败：{str(e)}")
+            self._ui(errbox, "错误", f"导出失败：{str(e)}")
 
     # ------------------------------ 备份相关 (.bak 格式) ------------------------------
     def get_backup_path(self, original_path):
@@ -589,7 +590,7 @@ class ConvertApp(ttk.Frame):
         try:
             self.log("===== 开始恢复备份 =====")
             if not self._snap['source_dir']:
-                self._ui(messagebox.showerror, "错误", "请选择源目录")
+                self._ui(errbox, "错误", "请选择源目录")
                 return
 
             src_root = self._snap['source_dir'] if not self.is_single_file else os.path.dirname(self._snap['source_dir'])
@@ -633,7 +634,7 @@ class ConvertApp(ttk.Frame):
 
         except Exception as e:
             self.log(f"恢复异常：{str(e)}")
-            self._ui(messagebox.showerror, "错误", str(e))
+            self._ui(errbox, "错误", str(e))
 
     def start_restore_thread(self):
         """启动恢复备份线程"""
@@ -658,7 +659,7 @@ class ConvertApp(ttk.Frame):
         try:
             self.log("===== 开始清空备份 =====")
             if not self._snap['source_dir']:
-                self._ui(messagebox.showerror, "错误", "请选择源目录")
+                self._ui(errbox, "错误", "请选择源目录")
                 return
 
             src_root = self._snap['source_dir'] if not self.is_single_file else os.path.dirname(self._snap['source_dir'])
@@ -706,7 +707,7 @@ class ConvertApp(ttk.Frame):
 
         except Exception as e:
             self.log(f"清空备份异常：{str(e)}")
-            self._ui(messagebox.showerror, "错误", str(e))
+            self._ui(errbox, "错误", str(e))
 
     def start_clear_backup_thread(self):
         """启动清空备份线程"""
@@ -918,7 +919,7 @@ class ConvertApp(ttk.Frame):
                 self.log(f"源编码：手动指定为 {enc_setting}")
 
             if not self._snap['source_dir']:
-                self._ui(messagebox.showerror, "错误", "请选择源目录或文件")
+                self._ui(errbox, "错误", "请选择源目录或文件")
                 return
 
             files = self.get_files()
@@ -976,7 +977,7 @@ class ConvertApp(ttk.Frame):
 
         except Exception as e:
             self.log(f"异常：{str(e)}")
-            self._ui(messagebox.showerror, "错误", str(e))
+            self._ui(errbox, "错误", str(e))
         finally:
             self._ui(self.start_btn.config, state=tk.NORMAL)
             self._ui(self.pause_btn.config, state=tk.DISABLED)

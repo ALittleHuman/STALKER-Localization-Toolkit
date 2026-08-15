@@ -430,7 +430,7 @@ class FontPackApp:
         if not out:
             messagebox.showwarning("缺少输出", "请选择输出目录"); return
         if not ensure_pillow():
-            messagebox.showerror("依赖缺失", "Pillow 安装失败，无法渲染字体"); return
+            errbox("依赖缺失", "Pillow 安装失败，无法渲染字体"); return
 
         self.running = True
         self.gen_btn.configure(state="disabled")

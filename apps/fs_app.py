@@ -25,6 +25,7 @@ from toolkit import (
     fmt_size, read_text_file, parse_xml_texts,
     log_section, vscrollbar, drop_zone,
     _BaseTk, _HAS_DND, DND_FILES,
+    log_to_file, errbox,
 )
 
 import stalker_fs

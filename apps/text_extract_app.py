@@ -25,6 +25,7 @@ from toolkit import (
     fmt_size, read_text_file, parse_xml_texts,
     log_section, vscrollbar, drop_zone,
     _BaseTk, _HAS_DND, DND_FILES,
+    log_to_file, errbox,
 )
 
 def _does_text_look_like_id(text: str) -> bool:
@@ -484,7 +485,7 @@ class TextExtractApp:
         pfx = self.prefix_var.get().strip() or "mod"
         if not src: messagebox.showwarning("提示", "请指定源目录"); return
         if not os.path.isdir(src):
-            messagebox.showerror("错误", f"源目录不存在：\n{src}"); return
+            errbox("错误", f"源目录不存在：\n{src}"); return
         # 类型预检: 源目录本身是 gameplay/scripts, 或父目录含其一 (两者都有则拒绝)
         base = os.path.basename(src).lower()
         if base not in ("gameplay", "scripts"):

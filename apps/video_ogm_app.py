@@ -25,6 +25,7 @@ from toolkit import (
     fmt_size, read_text_file, parse_xml_texts,
     log_section, vscrollbar, drop_zone,
     _BaseTk, _HAS_DND, DND_FILES,
+    log_to_file, errbox,
 )
 
 def _config_path() -> str:
@@ -624,7 +625,7 @@ class VideoOGMApp:
             return
         info, err = parse_video_info(path, self.ffprobe)
         if not info or not info.ok:
-            messagebox.showerror("解析失败", f"无法解析:\n{path}\n\n{err}")
+            errbox("解析失败", f"无法解析:\n{path}\n\n{err}")
             return
         self.source_path = path
         self.source_info = info
@@ -639,7 +640,7 @@ class VideoOGMApp:
             return
         info, err = parse_video_info(path, self.ffprobe)
         if not info or not info.ok:
-            messagebox.showerror("解析失败", f"无法解析:\n{path}\n\n{err}")
+            errbox("解析失败", f"无法解析:\n{path}\n\n{err}")
             return
         self.reference_path = path
         self.reference_info = info
