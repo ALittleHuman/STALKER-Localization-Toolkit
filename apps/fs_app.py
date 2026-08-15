@@ -24,7 +24,7 @@ from toolkit import (
     _make_pump, _role_of, refresh_theme, DEFAULT_ENCODINGS,
     fmt_size, read_text_file, parse_xml_texts,
     log_section, vscrollbar, drop_zone,
-    _BaseTk, _HAS_DND, DND_FILES,
+    app_dir, _BaseTk, _HAS_DND, DND_FILES,
     log_to_file, errbox,
 )
 
@@ -165,7 +165,7 @@ class FSToolApp:
             self.plugins = plugins
         else:
             self.plugins = PluginManager(
-                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugins"),
+                os.path.join(app_dir(), "plugins"),
                 log=self._log_plugin,
             )
             self.plugins.scan()

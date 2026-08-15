@@ -16,6 +16,13 @@ from tkinter import ttk, filedialog, messagebox
 APP_NAME = "STALKER Localization Toolkit"
 APP_VERSION = "1.0.0"
 
+
+def app_dir():
+    """可写应用目录：PyInstaller onedir 中为 exe 所在目录，开发环境为项目根目录。"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
 # tkinterdnd2 可选 (拖拽)
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -75,8 +82,8 @@ CURRENT_MODE = "dark"
 
 
 def user_config_path():
-    """用户配置文件路径: 工具根目录/user.ltx."""
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "user.ltx")
+    """用户配置文件路径: 应用目录/user.ltx."""
+    return os.path.join(app_dir(), "user.ltx")
 
 
 def load_user_theme():
@@ -235,7 +242,7 @@ def set_app_icon(win):
 def log_to_file(msg, tag="error"):
     """Append a timestamped line to logs/runtime.log for tracing."""
     try:
-        logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+        logs_dir = os.path.join(app_dir(), "logs")
         os.makedirs(logs_dir, exist_ok=True)
         path = os.path.join(logs_dir, "runtime.log")
         line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [{tag}] {msg}\n"

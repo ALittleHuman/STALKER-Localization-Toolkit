@@ -13,6 +13,11 @@ STALKER_Toolkit\
    └─ nlc_sqfs.py       # 示例：NLC 解密插件（本地保留，仓库不含）
 ```
 
+插件目录位置：
+
+- 源码运行：`STALKER_Toolkit\plugins`
+- 发布版（build 产物）：`STALKER Localization Toolkit\plugins`（exe 同目录，运行时可读写）
+
 加载规则：
 
 - 递归扫描 `plugins\` 下所有 `.py` 文件（含直接子目录）。

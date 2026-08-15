@@ -110,7 +110,6 @@ def build(out_dir):
             "--add-data", f"{os.path.join(BASE, 'apps')};apps",
             "--add-data", f"{os.path.join(BASE, 'file_system')};file_system",
             "--add-data", f"{os.path.join(BASE, 'font_pack')};font_pack",
-            "--add-data", f"{os.path.join(BASE, 'plugins')};plugins",
             "--add-data", f"{os.path.join(BASE, 'deps')};deps",
             "--add-data", f"{os.path.join(BASE, 'app_icon.ico')};.",
             "--distpath", out_dir,
@@ -126,12 +125,12 @@ def build(out_dir):
             print("Restored plugins/nlc_sqfs.py.")
         shutil.rmtree(temp_dir, ignore_errors=True)
 
-    app_dir = os.path.join(out_dir, APP_NAME)
-    if not os.path.isdir(app_dir):
-        raise RuntimeError(f"Build output not found: {app_dir}")
+    bundle_dir = os.path.join(out_dir, APP_NAME)
+    if not os.path.isdir(bundle_dir):
+        raise RuntimeError(f"Build output not found: {bundle_dir}")
 
     # Remove git placeholder files and any __pycache__ from the bundle.
-    for dp, dn, fn in os.walk(app_dir):
+    for dp, dn, fn in os.walk(bundle_dir):
         for f in fn:
             if f == ".gitkeep":
                 os.unlink(os.path.join(dp, f))
@@ -139,21 +138,27 @@ def build(out_dir):
             if d == "__pycache__":
                 shutil.rmtree(os.path.join(dp, d), ignore_errors=True)
 
+    # Runtime-writable directories live next to the exe, not inside _internal.
+    for sub in ("plugins", "logs"):
+        d = os.path.join(bundle_dir, sub)
+        os.makedirs(d, exist_ok=True)
+        print(f"Created {d}")
+
     for exe in ("ffmpeg.exe", "ffprobe.exe"):
         src = os.path.join(BASE, exe)
         if os.path.isfile(src):
-            shutil.copy2(src, os.path.join(app_dir, exe))
-            print(f"Copied {exe} -> {app_dir}")
+            shutil.copy2(src, os.path.join(bundle_dir, exe))
+            print(f"Copied {exe} -> {bundle_dir}")
 
-    exe_path = os.path.join(app_dir, f"{APP_NAME}.exe")
+    exe_path = os.path.join(bundle_dir, f"{APP_NAME}.exe")
     if not os.path.isfile(exe_path):
         raise RuntimeError(f"exe not found: {exe_path}")
 
     print("Build complete.")
-    print("Output:", app_dir)
+    print("Output:", bundle_dir)
     print("Exe:", exe_path)
     print("Note: build excludes plugins/nlc_sqfs.py (closed source).")
-    return app_dir
+    return bundle_dir
 
 
 def main():

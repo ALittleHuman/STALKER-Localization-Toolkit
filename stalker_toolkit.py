@@ -33,7 +33,7 @@ from toolkit import (
     fmt_size, read_text_file, parse_xml_texts,
     log_section, vscrollbar, drop_zone,
     load_user_theme, save_user_theme, apply_titlebar,
-    log_to_file, set_app_icon, APP_NAME, APP_VERSION,
+    log_to_file, set_app_icon, APP_NAME, APP_VERSION, app_dir,
     _BaseTk, _HAS_DND, DND_FILES,
 )
 from apps.font_pack_app import FontPackApp
@@ -102,7 +102,7 @@ if __name__ == "__main__":
 
     # 全局插件宿主：Hub 栏目 + 文件系统工具共用同一份插件实例。
     shared_plugins = PluginManager(
-        os.path.join(_BASE_DIR, "plugins"),
+        os.path.join(app_dir(), "plugins"),
         log=lambda msg, tag="info": log_to_file(msg, tag),
     )
     shared_plugins.scan()
@@ -212,7 +212,7 @@ if __name__ == "__main__":
             """导出日志到 程序目录/logs/ (自动创建)."""
             try:
                 g_log._flush()  # 先落盘 pending 缓冲日志
-                logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+                logs_dir = os.path.join(app_dir(), "logs")
                 os.makedirs(logs_dir, exist_ok=True)
                 fn = os.path.join(logs_dir, f"log_{time.strftime('%Y%m%d_%H%M%S')}.txt")
                 with open(fn, "w", encoding="utf-8") as f:
