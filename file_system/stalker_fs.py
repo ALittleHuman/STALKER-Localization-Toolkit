@@ -850,6 +850,30 @@ def sqfs_extract(path: str, out_dir: str, files: list = None) -> int:
     if not tool: return 0
     try:
         if files:
+            wanted = {f["path"].replace("\\", "/").lstrip("./") for f in files if not f.get("is_dir")}
+            if len(wanted) > 8:
+                # 批量导出：一次 sqfs2tar 比逐个 rdsquashfs --cat 快得多。
+                import io as _io
+                import tarfile as _tarfile
+                base = os.path.dirname(tool)
+                t2t = os.path.join(base, "sqfs2tar.exe")
+                if os.path.exists(t2t):
+                    r = subprocess.run([t2t, path], capture_output=True, timeout=600,
+                                       creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+                    if r.returncode == 0:
+                        count = 0
+                        with _tarfile.open(fileobj=_io.BytesIO(r.stdout)) as tar:
+                            for m in tar:
+                                name = m.name.replace("\\", "/").lstrip("./")
+                                if name in wanted and m.isfile():
+                                    p = os.path.join(out_dir, name.replace("/", os.sep))
+                                    os.makedirs(os.path.dirname(p), exist_ok=True)
+                                    src = tar.extractfile(m)
+                                    if src is not None:
+                                        with open(p, "wb") as fh:
+                                            fh.write(src.read())
+                                        count += 1
+                        return count
             count = 0
             for f in files:
                 if f.get("is_dir"): continue
