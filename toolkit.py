@@ -100,8 +100,21 @@ def save_user_theme(mode):
         pass
 
 
+def _hex_to_colorref(hex_color):
+    """将 '#RRGGBB' 转为 Windows COLORREF (0x00BBGGRR)。"""
+    try:
+        s = hex_color.lstrip("#")
+        r = int(s[0:2], 16)
+        g = int(s[2:4], 16)
+        b = int(s[4:6], 16)
+        return (b << 16) | (g << 8) | r
+    except Exception:
+        return None
+
+
 def apply_titlebar(root, mode=None):
-    """Windows 标题栏明暗跟随主题。失败时静默忽略。"""
+    """Windows 标题栏跟随主题：先切沉浸式明暗模式，再在 Win11 上设置
+    与工具色板一致的标题栏背景/文字颜色。失败时静默忽略。"""
     if sys.platform != "win32":
         return
     try:
@@ -123,16 +136,34 @@ def apply_titlebar(root, mode=None):
                 pass
             top = user32.GetParent(root.winfo_id())
         top = top or hwnd
-        value = 1 if mode == "dark" else 0
         dwm = ctypes.windll.dwmapi
+        value = 1 if mode == "dark" else 0
         # DWMWA_USE_IMMERSIVE_DARK_MODE: 20 = Windows 11/10 1903+;
         # 19 = 旧版 1903 之前。DwmSetWindowAttribute 失败时返回 HRESULT，
         # 不会抛 Python 异常，所以必须检查返回值并回退。
         hr = dwm.DwmSetWindowAttribute(
-              top, 20, ctypes.byref(ctypes.c_int(value)), ctypes.sizeof(ctypes.c_int))
+            top, 20, ctypes.byref(ctypes.c_int(value)), ctypes.sizeof(ctypes.c_int))
         if hr != 0:
             hr = dwm.DwmSetWindowAttribute(
                 top, 19, ctypes.byref(ctypes.c_int(value)), ctypes.sizeof(ctypes.c_int))
+        # Win11 22000+ 支持自定义标题栏颜色；旧系统上这些调用会返回
+        # 非 0 HRESULT，静默忽略即可，上面已保证明暗模式生效。
+        if hr == 0:
+            P = palette(mode)
+            bg_ref = _hex_to_colorref(P["bg"])
+            text_ref = _hex_to_colorref(P["text"])
+            border_ref = _hex_to_colorref(P["border"])
+            if bg_ref is not None:
+                # DWMWA_CAPTION_COLOR = 35, DWMWA_TEXT_COLOR = 36,
+                # DWMWA_BORDER_COLOR = 34 (Windows 11)。
+                dwm.DwmSetWindowAttribute(
+                    top, 35, ctypes.byref(ctypes.c_int(bg_ref)), ctypes.sizeof(ctypes.c_int))
+                if text_ref is not None:
+                    dwm.DwmSetWindowAttribute(
+                        top, 36, ctypes.byref(ctypes.c_int(text_ref)), ctypes.sizeof(ctypes.c_int))
+                if border_ref is not None:
+                    dwm.DwmSetWindowAttribute(
+                        top, 34, ctypes.byref(ctypes.c_int(border_ref)), ctypes.sizeof(ctypes.c_int))
         if hr == 0:
             # 强制刷新非客户区，让 DWM 立即用新属性重绘标题栏。
             SWP_NOMOVE = 0x0002
@@ -145,7 +176,6 @@ def apply_titlebar(root, mode=None):
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)
     except Exception:
         pass
-
 
 def log_to_file(msg, tag="error"):
     """Append a timestamped line to logs/runtime.log for tracing."""
