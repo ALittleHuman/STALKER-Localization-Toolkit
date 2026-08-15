@@ -100,6 +100,28 @@ def save_user_theme(mode):
         pass
 
 
+def apply_titlebar(root, mode=None):
+    """Windows 标题栏明暗跟随主题。失败时静默忽略。"""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        if mode is None:
+            mode = CURRENT_MODE
+        hwnd = root.winfo_id()
+        value = 1 if mode == "dark" else 0
+        # DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (Windows 11/10 1903+)
+        try:
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 20, ctypes.byref(ctypes.c_int(value)), ctypes.sizeof(ctypes.c_int))
+        except Exception:
+            # DWMWA_USE_IMMERSIVE_DARK_MODE 旧值 = 19
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 19, ctypes.byref(ctypes.c_int(value)), ctypes.sizeof(ctypes.c_int))
+    except Exception:
+        pass
+
+
 def log_to_file(msg, tag="error"):
     """Append a timestamped line to logs/runtime.log for tracing."""
     try:
