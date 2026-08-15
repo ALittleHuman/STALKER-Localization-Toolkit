@@ -48,14 +48,45 @@ def collect_xml_files(root: Path) -> dict[str, Path]:
     return files
 
 
-def read_file_text(filepath: Path) -> str:
-    """读取文件，依次尝试 UTF-8 / Windows-1251 / Windows-1252 / GBK。"""
-    for enc in ("utf-8", "windows-1251", "windows-1252", "gbk"):
+def decode_file(filepath: Path, enc_override: str = "auto") -> tuple[str, str]:
+    """读取文件并返回 (text, used_encoding)。
+
+    可靠性规则:
+      * 先做多字节检测: 只要能严格按 UTF-8 解码，就按 UTF-8 读。
+      * 否则使用手动选择的单字节编码；手动为 auto 时按 1251 → 1252 → gbk 尝试。
+      * 全部失败后用 latin-1 保底。
+    """
+    raw = filepath.read_bytes()
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    elif raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        raw = raw[2:]
+
+    # 多字节优先: UTF-8
+    try:
+        return raw.decode("utf-8"), "utf-8"
+    except (UnicodeDecodeError, UnicodeError):
+        pass
+
+    enc = enc_override.strip().lower()
+    if enc not in ("", "auto"):
         try:
-            return filepath.read_text(encoding=enc)
+            return raw.decode(enc), enc
+        except (UnicodeDecodeError, UnicodeError):
+            pass
+
+    for e in ("windows-1251", "windows-1252", "gbk"):
+        try:
+            return raw.decode(e), e
         except (UnicodeDecodeError, UnicodeError):
             continue
-    return filepath.read_text(encoding="latin-1")
+    return raw.decode("latin-1"), "latin-1"
+
+
+def read_file_text(filepath: Path) -> str:
+    """兼容旧调用: 只返回文本。"""
+    text, _ = decode_file(filepath)
+    return text
 
 
 # ── 模式 1：行数/ID 统计 ──────────────────
@@ -63,8 +94,8 @@ def read_file_text(filepath: Path) -> str:
 ID_PATTERN = re.compile(r"""\bid\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 
 
-def parse_file(filepath: Path) -> tuple[int, Counter]:
-    text = read_file_text(filepath)
+def parse_file(filepath: Path, enc_override: str = "auto") -> tuple[int, Counter, str]:
+    text, used_enc = decode_file(filepath, enc_override)
     # 行数统计用原始内容 (含 XML 声明), 反映实际文件行数
     lines = len(text.splitlines())
     if text.endswith(("\n", "\r")):
@@ -72,12 +103,13 @@ def parse_file(filepath: Path) -> tuple[int, Counter]:
     # ID 统计忽略 XML 声明 (含 BOM), 声明 encoding 差异不影响
     body = re.sub(r"^\s*\ufeff?\s*<\?xml[^>]*\?>\s*", "", text, count=1, flags=re.I | re.S)
     ids = Counter(ID_PATTERN.findall(body))
-    return lines, ids
+    return lines, ids, used_enc
 
 
-def compare_one(rel: str, fa: Path, fb: Path, na: str, nb: str) -> dict:
-    la, ida = parse_file(fa)
-    lb, idb = parse_file(fb)
+def compare_one(rel: str, fa: Path, fb: Path, na: str, nb: str,
+                enc_a: str = "auto", enc_b: str = "auto") -> dict:
+    la, ida, enc_used_a = parse_file(fa, enc_a)
+    lb, idb, enc_used_b = parse_file(fb, enc_b)
 
     only_a = sorted(set(ida) - set(idb))
     only_b = sorted(set(idb) - set(ida))
@@ -97,6 +129,7 @@ def compare_one(rel: str, fa: Path, fb: Path, na: str, nb: str) -> dict:
         "only_a": only_a, "only_b": only_b,
         "count_diff": count_diff,
         "ida": ida, "idb": idb,
+        "encoding_a": enc_used_a, "encoding_b": enc_used_b,
     }
 
 
@@ -151,7 +184,7 @@ def build_full_detail(r: dict, na: str, nb: str) -> str:
 
 # ── 模式 2：ID 文本对比 ──────────────────
 
-def parse_file_text_by_id(filepath: Path) -> dict[str, str]:
+def parse_file_text_by_id(filepath: Path, enc_override: str = "auto") -> tuple[dict[str, str], str]:
     """
     解析 STALKER 风格 XML，提取 id → 文本内容 映射。
     支持两种常见格式：
@@ -159,20 +192,16 @@ def parse_file_text_by_id(filepath: Path) -> dict[str, str]:
       <text id="xxx">内容</text>
     """
     result = {}
+    text, used_enc = decode_file(filepath, enc_override)
     try:
-        raw = _fix_entities(filepath.read_bytes())
+        text = _fix_entities(text.encode("utf-8")).decode("utf-8", "ignore")
         root = None
         try:
-            root = ET.fromstring(raw)
+            root = ET.fromstring(text)
         except Exception:
-            # 无 XML 声明且是 CP1251 的情况 (原版常见), 手动指定编码
-            try:
-                root = ET.fromstring(raw.decode("windows-1251"))
-            except Exception:
-                # 无根节点 / 多根平铺的情况 (NLC 英文版常见): 去掉声明后包一层 root
-                text = raw.decode("utf-8", "ignore")
-                text = re.sub(r"<\?xml[^>]*\?>", "", text, count=1, flags=re.I | re.S)
-                root = ET.fromstring("<root>" + text + "</root>")
+            # 无根节点 / 多根平铺的情况 (NLC 英文版常见): 去掉声明后包一层 root
+            text_no_decl = re.sub(r"<\?xml[^>]*\?>", "", text, count=1, flags=re.I | re.S)
+            root = ET.fromstring("<root>" + text_no_decl + "</root>")
         for elem in root.iter():
             eid = elem.get("id")
             if not eid:
@@ -185,17 +214,18 @@ def parse_file_text_by_id(filepath: Path) -> dict[str, str]:
                 result[eid] = elem.text.strip()
     except Exception:
         pass
-    return result
+    return result, used_enc
 
 
-def compare_text_content(rel: str, fa: Path, fb: Path, na: str, nb: str) -> dict:
+def compare_text_content(rel: str, fa: Path, fb: Path, na: str, nb: str,
+                        enc_a: str = "auto", enc_b: str = "auto") -> dict:
     """
     按 ID 比较两个 XML 文件的文本内容。
     返回 only_a（A 有 B 无的 id）、only_b（B 有 A 无的 id）、
     text_diff（文本不同的 id 及两方文本）。
     """
-    ida = parse_file_text_by_id(fa)
-    idb = parse_file_text_by_id(fb)
+    ida, enc_used_a = parse_file_text_by_id(fa, enc_a)
+    idb, enc_used_b = parse_file_text_by_id(fb, enc_b)
 
     only_a = sorted(set(ida) - set(idb))
     only_b = sorted(set(idb) - set(ida))
@@ -215,6 +245,7 @@ def compare_text_content(rel: str, fa: Path, fb: Path, na: str, nb: str) -> dict
         "only_a": only_a, "only_b": only_b,
         "text_diff": text_diff,
         "ida_text": ida, "idb_text": idb,
+        "encoding_a": enc_used_a, "encoding_b": enc_used_b,
     }
 
 
@@ -244,6 +275,21 @@ def build_text_detail(r: dict, na: str, nb: str) -> str:
     return "；".join(parts) if parts else ""
 
 
+def _first_diff_info(a: str, b: str):
+    """返回 (位置, A字符, B字符)；完全相同返回 None。"""
+    for i, (ca, cb) in enumerate(zip(a, b)):
+        if ca != cb:
+            return i, ca, cb
+    return None
+
+
+def _char_desc(ch: str) -> str:
+    """字符描述: 显示字符本身 + Unicode 码点；替换符特别标注。"""
+    if ch == "\ufffd":
+        return "� U+FFFD(坏字符/替换符)"
+    return f"{ch!r} U+{ord(ch):04X}"
+
+
 def build_full_text_detail(r: dict, na: str, nb: str) -> str:
     """文本比较模式完整差异明细。"""
     lines = []
@@ -265,6 +311,10 @@ def build_full_text_detail(r: dict, na: str, nb: str) -> str:
         lines.append(f"\n文本不同的 id ({len(r['text_diff'])} 个):")
         for iid, ta, tb in r["text_diff"]:
             lines.append(f'  id="{iid}"')
+            fi = _first_diff_info(ta, tb)
+            if fi is not None:
+                pos, ca, cb = fi
+                lines.append(f"    首个差异@{pos}: {na}={_char_desc(ca)}  vs  {nb}={_char_desc(cb)}")
             lines.append(f"    {na}: {ta}")
             lines.append(f"    {nb}: {tb}")
             lines.append("")
@@ -280,6 +330,8 @@ def build_full_text_detail(r: dict, na: str, nb: str) -> str:
 MODE_STATS = "行数/ID 统计"
 MODE_TEXT = "ID 文本对比"
 MODES = [MODE_STATS, MODE_TEXT]
+
+ENCODINGS = ["auto", "utf-8", "windows-1251", "windows-1252", "gbk", "latin-1"]
 
 FILTERS_STATS = ["全部", "不一致", "一致", "仅 A 有", "仅 B 有"]
 FILTERS_TEXT = ["全部", "有差异", "文本不同", "仅 A 有", "仅 B 有"]
@@ -338,6 +390,20 @@ class XMLCompareApp:
 
         btn_row = tk.Frame(self.root)
         btn_row.pack(fill="x", padx=12, pady=(0, 4))
+
+        # 编码选择（自动为默认，手动可强制指定单字节编码）
+        enc_row = tk.Frame(self.root)
+        enc_row.pack(fill="x", padx=12, pady=(0, 4))
+        tk.Label(enc_row, text="编码 A:", font=self.font_ui).pack(side="left", padx=(0, 4))
+        self.enc_a_var = tk.StringVar(value="auto")
+        self.cb_enc_a = ttk.Combobox(enc_row, textvariable=self.enc_a_var,
+                                     values=ENCODINGS, state="readonly", width=14)
+        self.cb_enc_a.pack(side="left", padx=(0, 12))
+        tk.Label(enc_row, text="编码 B:", font=self.font_ui).pack(side="left", padx=(0, 4))
+        self.enc_b_var = tk.StringVar(value="auto")
+        self.cb_enc_b = ttk.Combobox(enc_row, textvariable=self.enc_b_var,
+                                     values=ENCODINGS, state="readonly", width=14)
+        self.cb_enc_b.pack(side="left", padx=(0, 12))
 
         self.btn_compare = tk.Button(btn_row, text="开始比较", font=self.font_ui,
                                   command=self._start_compare, width=12)
@@ -510,9 +576,11 @@ class XMLCompareApp:
         self._current_detail_result = None
 
         mode = self.mode_var.get()
-        threading.Thread(target=self._run_compare, args=(pa, pb, mode), daemon=True).start()
+        enc_a = self.enc_a_var.get()
+        enc_b = self.enc_b_var.get()
+        threading.Thread(target=self._run_compare, args=(pa, pb, mode, enc_a, enc_b), daemon=True).start()
 
-    def _run_compare(self, pa: str, pb: str, mode: str):
+    def _run_compare(self, pa: str, pb: str, mode: str, enc_a: str = "auto", enc_b: str = "auto"):
         try:
             root_a = Path(pa)
             root_b = Path(pb)
@@ -532,10 +600,12 @@ class XMLCompareApp:
             for i, rel in enumerate(common):
                 if mode == MODE_TEXT:
                     r = compare_text_content(rel, files_a[rel], files_b[rel],
-                                             self.name_a, self.name_b)
+                                             self.name_a, self.name_b,
+                                             enc_a=enc_a, enc_b=enc_b)
                 else:
                     r = compare_one(rel, files_a[rel], files_b[rel],
-                                    self.name_a, self.name_b)
+                                    self.name_a, self.name_b,
+                                    enc_a=enc_a, enc_b=enc_b)
                 results.append(r)
                 if (i + 1) % 20 == 0 or i == total - 1:
                     self._ui(lambda c=i+1, t=total: self.lbl_status.config(
