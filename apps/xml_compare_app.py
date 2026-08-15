@@ -28,6 +28,11 @@ from toolkit import (
     log_to_file, errbox,
 )
 
+_AMP_BAD = re.compile(rb'&(?!amp;|lt;|gt;|quot;|apos;|#x?[0-9a-fA-F]+;)')
+_LT_BAD = re.compile(rb'<(?![!/?a-zA-Z])')
+_COMMENT_BAD = re.compile(rb'<!--(-+)')
+
+
 def _fix_entities(raw: bytes) -> bytes:
     """把未转义的 & 和 < 转成实体、修正 <!-- 后多余的 -，容忍原版 XML 格式缺陷。"""
     raw = _AMP_BAD.sub(b'&amp;', raw)
@@ -156,11 +161,18 @@ def parse_file_text_by_id(filepath: Path) -> dict[str, str]:
     result = {}
     try:
         raw = _fix_entities(filepath.read_bytes())
+        root = None
         try:
             root = ET.fromstring(raw)
         except Exception:
             # 无 XML 声明且是 CP1251 的情况 (原版常见), 手动指定编码
-            root = ET.fromstring(raw.decode("windows-1251"))
+            try:
+                root = ET.fromstring(raw.decode("windows-1251"))
+            except Exception:
+                # 无根节点 / 多根平铺的情况 (NLC 英文版常见): 去掉声明后包一层 root
+                text = raw.decode("utf-8", "ignore")
+                text = re.sub(r"<\?xml[^>]*\?>", "", text, count=1, flags=re.I | re.S)
+                root = ET.fromstring("<root>" + text + "</root>")
         for elem in root.iter():
             eid = elem.get("id")
             if not eid:
@@ -171,7 +183,7 @@ def parse_file_text_by_id(filepath: Path) -> dict[str, str]:
                 result[eid] = text_elem.text.strip()
             elif elem.text:
                 result[eid] = elem.text.strip()
-    except (ET.ParseError, Exception):
+    except Exception:
         pass
     return result
 
