@@ -455,15 +455,17 @@ def render_font(chars, font_path, size, x2, fmt):
         mask = font.getmask(ch, mode="L")
         mb = mask.getbbox()
         if mb is not None:
-            top = bbox[1] // S
-            left = bbox[0] // S
             gw = (mb[2] - mb[0]) // S
             gh = (mb[3] - mb[1]) // S
             if gw >= 1 and gh >= 1:
                 glyph = Image.frombytes("L", mask.size, bytes(mask)).crop(mb)
                 if S > 1:
                     glyph = glyph.resize((gw, gh), Image.LANCZOS)
-                canvas.paste(glyph, (x + left, y + top))
+                # 字形在采样框内居中，避免字体 bbox 的 left/top
+                # 让大字号字形整体偏向右下。
+                draw_x = x + max(0, (rw - gw) // 2)
+                draw_y = y + max(0, (cell_h - gh) // 2)
+                canvas.paste(glyph, (draw_x, draw_y))
         ini.append(f"{ord(ch):05d}= {x}, {y}, {x + rw}, {y + cell_h}")
 
     # 转像素
