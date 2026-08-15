@@ -15,3 +15,6 @@ deps/
 
 # 用户本地主题配置
 user.ltx
+
+# NLC 解密插件闭源，不进入仓库
+plugins/nlc_sqfs.py

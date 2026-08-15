@@ -6,8 +6,7 @@
 
 ```
 STALKER_Toolkit\
-├─ plugins\
-│  └─ nlc_sqfs.py                         # NLC Improved sq_base 解密插件
+├─ plugins\                             # 开源插件目录（不含闭源组件）
 └─ deps\
    └─ squashfs-tools-ng-1.3.2-mingw64\    # 第三方依赖（供 FS 引擎调用，不是插件）
 ```
@@ -53,11 +52,11 @@ def my_decrypt(path, out_path=None):
 | `api.register_menu_item(label, callback)` | 在文件系统工具的右键菜单新增一项。 |
 | `api.register_option(label, choices)` | 为下拉框新增选项。 |
 
-## 现有插件：NLC Improved sq_base
+## 闭源插件：NLC Improved sq_base 解密器
 
-- 文件：`plugins\nlc_sqfs.py`
-- 功能：识别 `ZZZZ` 头部的 NLC Improved `sq_base`，解密为标准 SquashFS。
-- 使用：无需任何操作。在文件系统工具中加载 `.sq_base` 时，插件会自动被调用；解密成功后按普通 SquashFS 浏览和提取。
+- NLC 解密插件为**闭源组件**，不包含在本仓库中，也不以源码形式发布。
+- 如你持有该插件，请将 `nlc_sqfs.py` 自行放入 `plugins\` 目录；文件系统工具加载 `.sq_base` 时会自动调用。
+- 没有该插件时，工具仍可正常启动，只是无法解密 NLC `sq_base`。
 
 ## 插件管理约定
 
