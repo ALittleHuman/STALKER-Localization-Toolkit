@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+temp/
+cross_validate_out/
+backup/
+
+# 导出日志目录保留，但不提交日志内容
+logs/*
+!logs/.gitkeep
+
+# 大体积运行依赖，不在 Git 仓库中
+ffmpeg.exe
+ffprobe.exe
+deps/
