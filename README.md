@@ -11,7 +11,7 @@
 | 文本提取 | 从零散文件（XML 等）中提取可翻译文本 |
 | XML 校对 | 行数 / ID 统计、ID 文本对比，支持多根 XML、坏实体、编码声明与实际不符 |
 | 视频转换 | MP4 / MOV → OGM，按参考 OGM 还原编码与码率参数，兼容 X-Ray 引擎 |
-| 汉化包生成 | SoC / CS / CoP 三版本 gamedata 汉化包生成 |
+| 汉化包生成 | SoC / ClS / CoP 三版本 gamedata 汉化包生成（ClS和CoP尚未测试） |
 
 ## 目录结构
 
