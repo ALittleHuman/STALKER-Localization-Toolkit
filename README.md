@@ -96,6 +96,11 @@ GitHub Actions 会在 push / PR 时自动运行核心测试。
 
 Hub 右上角可切换亮 / 暗主题，选择会写入 `user.ltx`，下次启动保持。Windows 11 标题栏会跟随主题使用工具色板中的纯色。
 
+## 已知问题
+
+- **NLC Improved（魔改新版 OGSR）上，部分超长文本字段渲染异常**：个别字段（例如 esc_attention 中的超长段落）在游戏内会显示为方块和西里尔字母，疑似引擎局部按 windows-1251 处理所致，具体机制未知。字库生成侧已验证无缺字、坐标无误。Golden Sphere OGSR（旧版）未复现。
+- **NLC Improved 上换行时机偏早**：引擎按 INI 字符宽度排版，而当前 INI 宽度参考 CN_Pack_Generator 的 GDI advance，视觉上字宽正常但引擎认为的行宽偏大，导致自动换行偏早。该问题为 NLC 独有。
+
 ## 版本规划
 
 - 1.0.x：社区反馈维护，分隔条手感优化
