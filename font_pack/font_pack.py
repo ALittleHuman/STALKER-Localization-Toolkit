@@ -479,7 +479,7 @@ def render_font(chars, font_path, size, x2, fmt):
                 # 全部使用字体自然位置（与最初一致），整体略微下移，
                 # 避免采样框顶部扫到上一行字形的底边。
                 draw_x = x + left
-                draw_y = y + top + 2
+                draw_y = y + top - 2
                 canvas.paste(glyph, (draw_x, draw_y))
         ini.append(f"{ord(ch):05d}= {x}, {y}, {x + rw}, {y + cell_h}")
 
