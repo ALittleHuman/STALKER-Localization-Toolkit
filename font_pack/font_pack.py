@@ -476,20 +476,10 @@ def render_font(chars, font_path, size, x2, fmt):
                     glyph = glyph.resize((gw, gh), Image.LANCZOS)
                 top = bbox[1] // S
                 left = bbox[0] // S
-                if unicodedata.category(ch).startswith(("P", "S")):
-                    # 标点/符号按参考 FontGen 逐一拟合的偏移放置。
-                    off = PUNCT_OFFSETS.get(size, {}).get(ord(ch))
-                    if off is not None:
-                        draw_x = x + off[0]
-                        draw_y = y + off[1]
-                    else:
-                        draw_x = x + left
-                        draw_y = y + top
-                else:
-                    # 字母/数字/汉字水平居中；垂直统一按基线（top），
-                    # 保证大写英文与中文底端保持水平。
-                    draw_x = x + max(0, (rw - gw) // 2)
-                    draw_y = y + top
+                # 全部使用字体自然位置（与最初一致），整体略微下移，
+                # 避免采样框顶部扫到上一行字形的底边。
+                draw_x = x + left
+                draw_y = y + top + 2
                 canvas.paste(glyph, (draw_x, draw_y))
         ini.append(f"{ord(ch):05d}= {x}, {y}, {x + rw}, {y + cell_h}")
 
