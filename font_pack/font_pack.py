@@ -419,16 +419,15 @@ def write_dds(path, w, h, fmt, data):
         f.write(hdr + data)
 
 
-def render_font(chars, font_path, size, x2, fmt, render_size=None):
+def render_font(chars, font_path, size, x2, fmt):
     """渲染一个字库: 返回 (dds_bytes, ini_text, tex_w, tex_h, max_y).
-    size 用于查槽高/宽度表（标准字号），render_size 为实际渲染字号。
-    布局 = 原版 FontGen 网格: 槽宽=cell高, 每行槽数=tex_w//槽宽.
+    布局 = 原版 FontGen 网格: 槽宽=cell高, 每行槽数=tex_w//槽宽,
+    字符在槽内水平居中 (x1 = col*槽宽 + (槽宽-字符宽)//2).
     宽: 1024 若行数*cell 放得下, 否则 2048. 高: 2 幂 ≥ (max_y-1)."""
     from PIL import Image, ImageFont
     S = 2 if x2 else 1
-    render_size = render_size if render_size is not None else size
-    font = ImageFont.truetype(font_path, render_size * S)
-    cell_h = CELL_HEIGHTS.get(size, size + 4)  # 槽宽 = cell 高
+    font = ImageFont.truetype(font_path, size * S)
+    cell_h = CELL_HEIGHTS.get(size, size + 1)  # 槽宽 = cell 高
     adv_table = ADV_TABLES.get(size, {})
 
     def widths_of(ch):
@@ -530,7 +529,7 @@ def build_package(game, lang, xml_dir, font_path, out_dir,
     for size, x2 in SIZES:
         rsize = size + offset  # 实际渲染字号
         L(f"渲染字号 {rsize} ({'x2' if x2 else '原生'})...")
-        data, ini, tex_w, tex_h, max_y = render_font(chars, font_path, size, x2, fmt, render_size=rsize)
+        data, ini, tex_w, tex_h, max_y = render_font(chars, font_path, rsize, x2, fmt)
         base = os.path.join(tex_dir, f"ui_font_{size}{suffix}")
         write_dds(base + ".dds", tex_w, tex_h, fmt, data)
         with open(base + ".ini", "w", encoding="ascii") as f:
