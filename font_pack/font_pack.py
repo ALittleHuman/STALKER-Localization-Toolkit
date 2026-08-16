@@ -427,7 +427,7 @@ def render_font(chars, font_path, size, x2, fmt):
     from PIL import Image, ImageFont
     S = 2 if x2 else 1
     font = ImageFont.truetype(font_path, size * S)
-    cell_h = CELL_HEIGHTS.get(size, size + 1)  # 槽宽 = cell 高
+    cell_h = CELL_HEIGHTS.get(size, size + 4)  # 槽宽 = cell 高
     adv_table = ADV_TABLES.get(size, {})
 
     def widths_of(ch):
@@ -439,12 +439,14 @@ def render_font(chars, font_path, size, x2, fmt):
         adv = font.getlength(ch) / S
         return max(1, round(adv) + 1)
 
-    # 先确定纹理宽: 1024 行数*cell ≤ 1024 则用, 否则 2048
+    # 先确定画布宽: 1024 → 2048 → 4096，保证大字号/大字符集放得下
     tex_w = 1024
     slots = tex_w // cell_h
     rows_n = (len(chars) + slots - 1) // slots
-    if rows_n * cell_h - 1 > 1024:
-        tex_w = 2048
+    for candidate in (2048, 4096):
+        if rows_n * cell_h - 1 <= tex_w:
+            break
+        tex_w = candidate
         slots = tex_w // cell_h
         rows_n = (len(chars) + slots - 1) // slots
     if rows_n * cell_h - 1 > tex_w:
