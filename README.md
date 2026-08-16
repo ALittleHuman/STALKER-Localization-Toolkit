@@ -29,7 +29,7 @@ STALKER_Toolkit\
 ├─ file_system\               X-Ray DB / SquashFS 引擎（stalker_fs.py + lzhuf_dll.dll）
 ├─ font_pack\                 汉化包生成库
 ├─ plugins\                   插件目录（详见 PLUGINS.md）
-├─ deps\                      squashfs-tools-ng 等第三方依赖（发布包附带，仓库不含）
+├─ deps\                      squashfs-tools-ng 等第三方依赖
 ├─ logs\                      运行日志输出
 ├─ download_ffmpeg.py         ffmpeg / ffprobe 检测与自动下载
 ├─ run_ci.py                  本地回归测试入口
