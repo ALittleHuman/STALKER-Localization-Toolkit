@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""文本提取 App (TextExtractApp)."""
+"""文本提取 App (TextExtractApp).
+
+提取逻辑参考 wzyddg/stalker_auto-trans-tool_remake，
+作者已在贴吧（https://tieba.baidu.com/p/7900909352）声明开源。"""
 import os, sys, re, threading, struct, shutil, subprocess, tempfile, time, json, glob
 from datetime import datetime
 from dataclasses import dataclass, field
