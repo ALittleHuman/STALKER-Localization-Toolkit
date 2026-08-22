@@ -107,6 +107,10 @@ Hub 右上角可切换亮 / 暗主题，选择会写入 `user.ltx`，下次启�
 - 1.0.x：社区反馈维护，分隔条手感优化
 - 2.0.0：C++ 重写，提升速度、精度和兼容性
 
+## 第三方组件
+
+- 文本提取功能参考 [wzyddg/stalker_auto-trans-tool_remake](https://github.com/wzyddg/stalker_auto-trans-tool_remake)，作者已在贴吧（https://tieba.baidu.com/p/7900909352）声明开源。
+
 ## 许可证
 
 见仓库 LICENSE 文件。NLC 解密插件为闭源组件，不在本仓库发布。
