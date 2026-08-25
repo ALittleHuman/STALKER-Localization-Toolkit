@@ -20,8 +20,15 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
 from toolkit import APP_NAME, APP_VERSION  # noqa: E402
 
+BUILDS_COUNT = os.path.join(BASE, 'build_count.txt')
+with open(BUILDS_COUNT, 'r', encoding='utf-8') as f:
+    count = str(int(f.read().strip()) + 1)
+with open(BUILDS_COUNT, 'w', encoding='utf-8') as f:
+    f.write(count)
 BUILDS_DIR = os.path.join(BASE, "builds")
-DEFAULT_OUT = os.path.join(BUILDS_DIR, "build001")
+DEFAULT_OUT = os.path.join(BUILDS_DIR, "build_" + count)
+
+os.makedirs(DEFAULT_OUT, exist_ok=True)
 
 
 def ensure_pyinstaller():
