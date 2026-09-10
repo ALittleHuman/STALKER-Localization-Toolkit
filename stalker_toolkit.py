@@ -5,7 +5,7 @@ STALKER Localization Toolkit — Hub
 XML 校对、OGM 视频转换、汉化包生成，并托管插件扩展的栏目。
 运行: python stalker_toolkit.py
 """
-import os, sys, re, threading, struct, shutil, subprocess, tempfile, time, json, glob
+import os, sys, re, threading, struct, shutil, tempfile, time, json, glob
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,7 +33,7 @@ from toolkit import (
     fmt_size, read_text_file, parse_xml_texts,
     log_section, vscrollbar, drop_zone,
     load_user_theme, save_user_theme, apply_titlebar,
-    log_to_file, set_app_icon, APP_NAME, APP_VERSION, app_dir,
+    log_to_file, set_app_icon, APP_NAME, APP_VERSION, app_dir, ensure_package,
     _BaseTk, _HAS_DND, DND_FILES,
 )
 from apps.font_pack_app import FontPackApp
@@ -46,24 +46,9 @@ from apps.fs_app import FSToolApp
 # ════════════════════════════════════════════════════════════════
 # 1. 主题 (亮/暗两套, 单函数切换)
 # ════════════════════════════════════════════════════════════════
-def install_package(package):
-    try:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", package],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
-        )
-        return True
-    except:
-        return False
-
-required = {"chardet": "chardet", "tkinterdnd2": "tkinterdnd2"}
-for imp, pkg in required.items():
-    try:
-        __import__(imp)
-    except ImportError:
-        install_package(pkg)
+# 依赖兜底：源码运行时缺包则自动安装（打包版依赖已内置）
+for _imp, _pkg in (("chardet", "chardet"), ("tkinterdnd2", "tkinterdnd2")):
+    ensure_package(_imp, _pkg)
 
 # ====================== 导入库（带回退） ======================
 import tkinter as tk
