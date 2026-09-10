@@ -23,19 +23,35 @@ def app_dir():
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
 
+def ensure_package(module_name, pip_name=None, timeout=120):
+    """确保第三方包可用：已安装直接返回 True，否则尝试 pip 安装。
+    打包版依赖已内置，此处只对源码运行有意义。"""
+    try:
+        __import__(module_name)
+        return True
+    except ImportError:
+        pass
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", pip_name or module_name],
+            capture_output=True, timeout=timeout,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+    except Exception:
+        return False
+    try:
+        __import__(module_name)
+        return True
+    except ImportError:
+        return False
+
+
 # tkinterdnd2 可选 (拖拽)
-try:
+if ensure_package("tkinterdnd2"):
     from tkinterdnd2 import DND_FILES, TkinterDnD
     _BaseTk = TkinterDnD.Tk; _HAS_DND = True
-except ImportError:
-    try:
-        subprocess.run([sys.executable, "-m", "pip", "install", "tkinterdnd2"],
-                       capture_output=True, timeout=120,
-                       creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-        from tkinterdnd2 import DND_FILES, TkinterDnD
-        _BaseTk = TkinterDnD.Tk; _HAS_DND = True
-    except ImportError:
-        _BaseTk = tk.Tk; _HAS_DND = False; DND_FILES = None
+else:
+    _BaseTk = tk.Tk; _HAS_DND = False; DND_FILES = None
 
 # ─── 色板 (唯一来源: 亮/暗两套, 样式代码共用同一函数) ───
 THEMES = {
