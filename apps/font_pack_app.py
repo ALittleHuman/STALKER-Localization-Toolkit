@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """汉化包生成 App (FontPackApp)."""
-import os, threading
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from apps._bootstrap import (
+    os, threading, tk, ttk, filedialog, messagebox,
+)
 
 from toolkit import T, color, tool_header, dir_row, SplitPane, log_section, _make_pump
 from font_pack import GAMES, ensure_pillow, build_package
