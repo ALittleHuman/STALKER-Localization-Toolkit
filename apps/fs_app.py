@@ -510,8 +510,7 @@ class FSToolApp:
             tf.write(dec); tf.close()
             entries = sqfs_list(tf.name)
             if not entries:
-                if not stalker_fs._find_sqfs_tool():
-                    self._log("  缺少 SquashFS 工具：请确认 deps\\squashfs-tools-ng-1.3.2-mingw64 目录完整（需要 rdsquashfs.exe）", "err")
+                self._diagnose_sqfs(tf.name)
                 self._log("  NLC 解密后解析失败", "err")
                 try:
                     os.unlink(tf.name)
@@ -589,6 +588,27 @@ class FSToolApp:
             return
         self._log("  无法自动识别格式", "warn")
 
+    def _diagnose_sqfs(self, sqfs_path):
+        """在 sqfs_list 失败后手动运行 rdsquashfs，把返回码/输出写入日志。"""
+        tool = stalker_fs._find_sqfs_tool()
+        if not tool:
+            self._log("  缺少 SquashFS 工具：请确认 deps\\squashfs-tools-ng-1.3.2-mingw64 目录完整（需要 rdsquashfs.exe）", "err")
+            return
+        try:
+            r = subprocess.run(
+                [tool, "--describe", sqfs_path],
+                capture_output=True, text=True, timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            self._log(f"  rdsquashfs 路径: {tool}", "dim")
+            self._log(f"  rdsquashfs 返回码: {r.returncode}", "err")
+            if r.stderr:
+                self._log(f"  rdsquashfs stderr: {r.stderr.strip()[:400]}", "err")
+            if r.stdout:
+                self._log(f"  rdsquashfs stdout: {r.stdout.strip()[:200]}", "err")
+        except Exception as e:
+            self._log(f"  rdsquashfs 运行失败: {e}", "err")
+
     def _try_plugin_decrypt(self, path):
         """Any file that failed standard recognition is offered to plugin decryptors."""
         entry = None
@@ -617,8 +637,7 @@ class FSToolApp:
                 tf.write(raw); tf.close()
                 entries = sqfs_list(tf.name)
                 if not entries:
-                    if not stalker_fs._find_sqfs_tool():
-                        self._log("  缺少 SquashFS 工具：请确认 deps\\squashfs-tools-ng-1.3.2-mingw64 目录完整（需要 rdsquashfs.exe）", "err")
+                    self._diagnose_sqfs(tf.name)
                     self._log("  解密后 SquashFS 列表失败", "err")
                     return False
                 self.raws[path] = b"DEC:" + tf.name.encode()
