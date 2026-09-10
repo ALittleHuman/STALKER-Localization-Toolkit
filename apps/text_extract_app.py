@@ -3,22 +3,12 @@
 
 提取逻辑参考 wzyddg/stalker_auto-trans-tool_remake，
 作者已在贴吧（https://tieba.baidu.com/p/7900909352）声明开源。"""
-import os, sys, re, threading, struct, shutil, subprocess, tempfile, time, json, glob
-from datetime import datetime
-from dataclasses import dataclass, field
-from pathlib import Path
-from collections import Counter
-from typing import Optional, List, Dict, Set, Tuple, Union, Any, Callable
-import xml.etree.ElementTree as ET
-
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
-
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for _sub in ("file_system", "font_pack", "plugins"):
-    _p = os.path.join(_BASE_DIR, _sub)
-    if os.path.isdir(_p) and _p not in sys.path:
-        sys.path.insert(0, _p)
+from apps._bootstrap import (
+    os, sys, re, threading, struct, shutil, subprocess, tempfile, time, json, glob,
+    datetime, dataclass, field, Path, Counter,
+    Optional, List, Dict, Set, Tuple, Union, Any, Callable,
+    ET, tk, ttk, filedialog, messagebox, scrolledtext,
+)
 
 from toolkit import (
     T, color, apply_theme, apply_tk_defaults,
