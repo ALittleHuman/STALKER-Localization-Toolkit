@@ -34,6 +34,7 @@ from toolkit import (
 # ── 提取用正则（与 convert_app 保持一致） ──
 RUS_LETTERS = "".join(chr(c) for c in range(0x0410, 0x0450)) + "\u0401\u0451"
 RUS_LET_CPL = re.compile("[" + RUS_LETTERS + "]")
+WORD_PATTERN = re.compile("[" + RUS_LETTERS + "a-zA-Z]")
 SCRIPT_LINE_PERMIT_PTN = re.compile(
     r"([Mm]essage|[Tt]ext(?!ure)|(?<![a-z])[Nn]ews(?![a-z]))")
 SCRIPT_LINE_SENSITIVE_PTN = re.compile(
@@ -232,6 +233,43 @@ def _parse_script(filepath: str, quiet: bool = False) -> Tuple[str, Set[str]]:
 #  提取核心
 # ============================================================================
 
+def _parse_ltx(filepath: str, quiet: bool = False) -> Tuple[str, Set[str]]:
+    """从 .ltx 脚本配置中提取可翻译文本。"""
+    whole_text = None
+    for i, enc in enumerate(DEFAULT_ENCODINGS):
+        try:
+            flag = (i == len(DEFAULT_ENCODINGS) - 1)
+            with open(filepath, "r", encoding=enc,
+                      errors="ignore" if flag else "strict") as f:
+                whole_text = f.read()
+            if not quiet:
+                print(f"  [{'FORCED ' if flag else ''}{enc}] {filepath}")
+            break
+        except UnicodeDecodeError:
+            if not quiet: print(f"  [NOT {enc}] {filepath}")
+    if whole_text is None:
+        raise ValueError(f"Cannot decode {filepath}")
+    cands = set()
+    for line in whole_text.splitlines():
+        line = line.split(";", 1)[0].strip()
+        if "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip().lower()
+        val = val.strip()
+        if not val:
+            continue
+        if key.startswith("inv_name") or key == "description":
+            cands.add(val.strip('"\''))
+        elif key in ("title", "descr"):
+            clean = re.sub(r"\{[^}]*\}", "", val)
+            for piece in clean.split(","):
+                piece = piece.strip().strip('"\'')
+                if piece:
+                    cands.add(piece)
+    return (whole_text, cands)
+
+
 def _extract_gameplay(src: str, dst: str, id_prefix: str, verbose: bool = True) -> dict:
     extracted, counter, fc, cc = {}, 0, 0, 0
     sp, tp = Path(src), Path(dst)
@@ -262,23 +300,36 @@ def _extract_gameplay(src: str, dst: str, id_prefix: str, verbose: bool = True) 
 def _extract_scripts(src: str, dst: str, id_prefix: str, verbose: bool = True) -> dict:
     extracted, counter, fc, cc = {}, 0, 0, 0
     sp, tp = Path(src), Path(dst)
-    for f in sorted(sp.rglob("*.script")):
+    files = sorted(list(sp.rglob("*.script")) + list(sp.rglob("*.ltx")))
+    for f in files:
         rel = f.relative_to(sp)
         if any(p.startswith("translated_") for p in rel.parts): continue
+        is_ltx = f.suffix.lower() == ".ltx"
         try:
-            wt, cands = _parse_script(str(f), quiet=not verbose)
+            if is_ltx:
+                wt, cands = _parse_ltx(str(f), quiet=not verbose)
+            else:
+                wt, cands = _parse_script(str(f), quiet=not verbose)
         except Exception as e:
             if verbose: print(f"  SKIP {rel}: {e}")
             continue
         fc += 1; repls = {}
-        for cq in cands:
-            qc = cq[0]; c = cq[1:-1]
-            if _does_text_look_like_id(c) or _does_text_look_like_script(c): continue
-            eid = f"{id_prefix}_{counter}"; counter += 1; cc += len(c)
-            extracted[eid] = c
-            old = qc + _escape_literal_text(c, quote=qc) + qc
-            repls[old] = f'{SCRIPT_TRANSLATE_FUNC}("{eid}")'
-            if verbose: print(".", end="", flush=True)
+        if is_ltx:
+            for c in cands:
+                if not c.strip() or _does_text_look_like_id(c) or _does_text_look_like_script(c): continue
+                eid = f"{id_prefix}_{counter}"; counter += 1; cc += len(c)
+                extracted[eid] = c
+                repls[c] = f'{SCRIPT_TRANSLATE_FUNC}("{eid}")'
+                if verbose: print(".", end="", flush=True)
+        else:
+            for cq in cands:
+                qc = cq[0]; c = cq[1:-1]
+                if _does_text_look_like_id(c) or _does_text_look_like_script(c): continue
+                eid = f"{id_prefix}_{counter}"; counter += 1; cc += len(c)
+                extracted[eid] = c
+                old = qc + _escape_literal_text(c, quote=qc) + qc
+                repls[old] = f'{SCRIPT_TRANSLATE_FUNC}("{eid}")'
+                if verbose: print(".", end="", flush=True)
         out = tp / rel; out.parent.mkdir(parents=True, exist_ok=True)
         _generate_output_file(str(out),
                               _replace_from_text(wt, repls) if repls else wt)
@@ -348,7 +399,7 @@ def run_extraction(source: str, target: str = "", prefix: str = "mod",
             log(f"  scripts: {len(sc)} 条 → {prefix}_scripts_texts.xml")
         stats["sc_strings"] = len(sc)
         stats["sc_chars"] = sum(len(v) for v in sc.values())
-        stats["sc_files"] = sum(1 for _ in Path(dst_sub).rglob("*.script"))
+        stats["sc_files"] = sum(1 for _ in Path(dst_sub).rglob("*.script")) + sum(1 for _ in Path(dst_sub).rglob("*.ltx"))
 
     stats["total"] = stats["gp_strings"] + stats["sc_strings"]
     stats["total_chars"] = stats["gp_chars"] + stats["sc_chars"]

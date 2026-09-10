@@ -510,6 +510,8 @@ class FSToolApp:
             tf.write(dec); tf.close()
             entries = sqfs_list(tf.name)
             if not entries:
+                if not stalker_fs._find_sqfs_tool():
+                    self._log("  缺少 SquashFS 工具：请确认 deps\\squashfs-tools-ng-1.3.2-mingw64 目录完整（需要 rdsquashfs.exe）", "err")
                 self._log("  NLC 解密后解析失败", "err")
                 try:
                     os.unlink(tf.name)
@@ -615,6 +617,8 @@ class FSToolApp:
                 tf.write(raw); tf.close()
                 entries = sqfs_list(tf.name)
                 if not entries:
+                    if not stalker_fs._find_sqfs_tool():
+                        self._log("  缺少 SquashFS 工具：请确认 deps\\squashfs-tools-ng-1.3.2-mingw64 目录完整（需要 rdsquashfs.exe）", "err")
                     self._log("  解密后 SquashFS 列表失败", "err")
                     return False
                 self.raws[path] = b"DEC:" + tf.name.encode()
