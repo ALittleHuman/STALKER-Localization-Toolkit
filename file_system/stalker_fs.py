@@ -773,16 +773,32 @@ _SQFS_TOOL = None
 def _find_sqfs_tool():
     """Locate rdsquashfs; uses the external tools directly (no temp copy)."""
     global _SQFS_TOOL
-    if _SQFS_TOOL: return _SQFS_TOOL
-    candidates = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "rdsquashfs.exe"),  # 打包后: 软件同目录
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "deps", "squashfs-tools-ng-1.3.2-mingw64", "bin", "rdsquashfs.exe"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "plugins", "squashfs-tools-ng-1.3.2-mingw64", "bin", "rdsquashfs.exe"),  # 兼容旧布局
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "legacy_sqfs_tools", "squashfs-tools-ng-1.3.2-mingw64", "bin", "rdsquashfs.exe"),
-        r"E:\Software\Games\STALKER\Localization\Tools\squashfs-tools-ng-1.3.2-mingw64\bin\rdsquashfs.exe",
-    ]
+    if _SQFS_TOOL:
+        return _SQFS_TOOL
+    # PyInstaller onedir：以 _MEIPASS(_internal) 为基准；开发环境：以本文件所在目录为基准。
+    if getattr(sys, "frozen", False):
+        bases = [getattr(sys, "_MEIPASS", "")]
+    else:
+        bases = [os.path.dirname(os.path.abspath(__file__))]
+    # 同时覆盖上一级目录（开发环境为项目根；发布版为 exe 同目录）
+    bases += [os.path.join(b, "..") for b in bases if b]
+    sub = os.path.join("squashfs-tools-ng-1.3.2-mingw64", "bin", "rdsquashfs.exe")
+    candidates = []
+    for b in bases:
+        if not b:
+            continue
+        candidates += [
+            os.path.join(b, "rdsquashfs.exe"),
+            os.path.join(b, "deps", sub),
+            os.path.join(b, "plugins", sub),          # 兼容旧布局
+            os.path.join(b, "legacy_sqfs_tools", sub),
+        ]
+    candidates.append(
+        r"E:\Software\Games\STALKER\Localization\Tools\squashfs-tools-ng-1.3.2-mingw64\bin\rdsquashfs.exe"
+    )
     for c in candidates:
-        if os.path.exists(c):
+        c = os.path.normpath(c)
+        if os.path.isfile(c):
             _SQFS_TOOL = c
             return c
     return None
