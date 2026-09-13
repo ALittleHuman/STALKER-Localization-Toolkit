@@ -728,10 +728,22 @@ def tool_text(parent, text, kind="body", **pack_kw):
 
 
 def tool_header(parent, text, **pack_kw):
-    """统一工具页大标题 (tool_text 的 title 别名)."""
-    kw = {"anchor": "w", "padx": 14, "pady": (14, 2)}
+    """统一工具页大标题 (tool_text 的 title 别名) + 一条极细分隔线。
+
+    用户授权（2026-09-13）"布局和交互也可以动，按你的审美来"。
+    大标题下面那条 1px 弱线是**信息层级**的锚点：它把"页面标题"和"下面的表单"
+    在视觉上分成两层，比加粗或用更亮的字更省地方。用弱色（border）而不是强调色，
+    免得六个页面各飘一条蓝线。
+    """
+    wrap = ttk.Frame(parent)
+    kw = {"anchor": "w", "padx": 14, "pady": (12, 0)}
     kw.update(pack_kw)
-    return tool_text(parent, text, kind="title", **kw)
+    wrap.pack(fill="x")
+    lbl = tool_text(wrap, text, kind="title", **kw)
+    # 用 ttk.Separator 而不是 tk.Frame：它的颜色由 `TSeparator` 样式给（= 主题的 border），
+    # 切亮/暗主题时**自动**跟着变；tk.Frame 得自己接进 recolor 链路，反而多一处会忘的接线。
+    ttk.Separator(wrap, orient="horizontal").pack(fill="x", padx=14, pady=(6, 8))
+    return lbl
 
 class ScrollViewport(ttk.Frame):
     """可裁剪 + 可滚动的视口；滚动条**平时隐藏**，装不下才出现。
