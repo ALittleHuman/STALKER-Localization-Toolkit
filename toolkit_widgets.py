@@ -1684,8 +1684,17 @@ class SplitPane(ttk.Panedwindow):
 
         纵向分栏（上下两栏）**不**裁剪：那两栏要随窗口高度铺满，纵向的"装不下"
         由主界面那条窗口级滚动条负责（见 `stalker_toolkit.build_hub`）。
+
+        **2026-09-13 反转：横向分栏也改成不裁剪。** 原来这里给左右两个窗格各配了一条
+        横向滚动条（"窗格窄于内容就滚"），实机结果是两个必然的怪相：
+          * 滚动条属于**窗格**、不属于**面板** → 它画在面板边框**外面**（用户截图："这个
+            滚动条怎么还在窗口外面"）；
+          * 每个窗格各自判断要不要滚 → "有的地方有、有的地方没有"，看着毫无规律。
+        回到 Tk 的正常模型更干净：**窗格内的内容跟着窗格伸缩**，滚动条只出现在真正
+        需要它的控件内部（树/文本框自己的 vbar/hbar）。窗格不会被压没 —— 那是
+        `minsize` + `_clamp`（空间不够时按最小值比例分配）负责的。
         """
-        vp = ScrollViewport(self, horizontal=(not self._vertical()), fit=fit)
+        vp = ScrollViewport(self, horizontal=False, fit=fit)
         self.add(vp, weight=weight, minsize=minsize)
         return vp.content
 

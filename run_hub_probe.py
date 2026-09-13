@@ -1144,9 +1144,10 @@ def main():
                 right1 = p2.winfo_rootx() + p2.winfo_width()
                 content_x = c2.winfo_x()
                 narrowed = p2.winfo_width() < p2.content.winfo_reqwidth()
-                hbar = bool(p2.hbar.winfo_manager()) if narrowed else False
+                hbar = bool(p2.hbar.winfo_manager()) if p2.hbar is not None else False
                 content_w = c2.winfo_width()
                 req_w = c2.winfo_reqwidth()
+                pane_w = p2.winfo_width()
             finally:
                 try:
                     top.destroy()
@@ -1154,7 +1155,7 @@ def main():
                     pass
             return {"types": types_ok, "p1L": (left0, left1), "p2R": (right0, right1),
                     "content_x": content_x, "narrowed": narrowed, "hbar": hbar,
-                    "content_w": content_w, "req_w": req_w}
+                    "content_w": content_w, "req_w": req_w, "pane_w": pane_w}
 
         _cp = _clipped_pane_checks()
         print("        实测：%r" % (_cp,))
@@ -1164,8 +1165,11 @@ def main():
               lambda: _cp["p1L"][0] == _cp["p1L"][1] and _cp["p2R"][0] == _cp["p2R"][1])
         check("裁剪窗格：内容左对齐（x 偏移恒为 0，没有被推走）",
               lambda: _cp["content_x"] == 0)
-        check("裁剪窗格：窄于内容时装不下就出横向滚动条，且内容保持自然宽度（不被压扁）",
-              lambda: _cp["narrowed"] and _cp["hbar"] and _cp["content_w"] >= _cp["req_w"])
+        check("裁剪窗格：**不配横向滚动条**（滚动条只归真正需要它的控件自己 —— "
+              "窗格级滚动条会画在面板外面、且各处有无不一）",
+              lambda: not _cp["hbar"])
+        check("裁剪窗格：窗格变窄时内容**跟着伸缩**（宽 == 窗格宽）",
+              lambda: _cp["content_w"] == _cp["pane_w"])
 
         def _pages_use_clipped():
             """源码锁：两个横向分栏的页面都必须用 add_clipped（漏一个那处就还是老行为）。"""
