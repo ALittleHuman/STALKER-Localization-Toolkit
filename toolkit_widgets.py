@@ -745,6 +745,39 @@ def tool_header(parent, text, **pack_kw):
     ttk.Separator(wrap, orient="horizontal").pack(fill="x", padx=14, pady=(6, 8))
     return lbl
 
+class ScrollPanel(ttk.LabelFrame):
+    """**统一滚动面板**：带标题的面板 + 内部视口（横/纵滚动条自动隐藏）。
+
+    用户口径 2026-09-13：
+
+    > "这边几个按钮被遮住了，但是底下仍然没有滚动条出现。底下滚动条出现的条件是该窗口
+    >  有东西显示不完全。包括控件和里面的内容。……这种控件不应该是统一写统一调用的吗？"
+
+    所以这条做成**一个类、六页统一调用**，出现条件就是用户那句话：
+    **面板里有东西显示不完全**（按内容实际需要 vs 可视区，不看窗格宽窄），
+    滚动条画在**面板内部**（不是窗格级 —— 窗格级会画到面板外面，已撤）。
+
+    用法（页面只往 `body` 里建东西）：
+
+        panel = ScrollPanel(container, "包内文件")
+        panel.pack(fill="both", expand=True)
+        ttk.Button(panel.body, text="全选").pack(side="left")
+    """
+
+    def __init__(self, parent, title="", padding=6, **kw):
+        super().__init__(parent, text=title, padding=padding, **kw)
+        self.view = ScrollViewport(self, horizontal=True)
+        self.view.pack(fill="both", expand=True)
+        self.body = self.view.content          # 调用方往这里建控件
+
+    def refresh(self):
+        """内容变了（加/删控件、改文字）之后调用，让滚动条重新判断要不要出现。"""
+        self.view._sync()
+
+    def recolor(self):
+        self.view.recolor()
+
+
 class ScrollViewport(ttk.Frame):
     """可裁剪 + 可滚动的视口；滚动条**平时隐藏**，装不下才出现。
 

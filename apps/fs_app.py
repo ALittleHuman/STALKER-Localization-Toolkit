@@ -8,6 +8,7 @@ import atexit
 
 from toolkit import (
     color, dir_row, count_label, tool_header, CanvasTree, SplitPane, PluginManager,
+    ScrollPanel,
     _make_pump, _HAS_DND, DND_FILES, log_summary, log_detail, plugin_slot_bar, tool_dropdown,
     plugin_options_area, tool_panel, TaskRunner, px,
     status_style_name, HOST_FS, LOC_CONTEXT, AREA_TOP_BAR, AREA_FORMAT, AREA_PACK_FORMAT,
@@ -221,12 +222,13 @@ class FSToolApp:
         # 日志面板由 Hub 统一提供，工具内不再自建
 
     def _build_db_panel(self, pan):
-        # 横向分栏的窗格走**裁剪式**：拖分隔条时这一侧的左边框不动、内容左对齐，
-        # 窄到装不下就出横向滚动条（而不是把里面的控件压扁）。用户口径 2026-09-13。
-        # 注意：容器是视口的 content，面板要**自己 pack 进去**（原来由 Panedwindow 代管）。
-        left = ttk.LabelFrame(pan.add_clipped(weight=1),
-                              text="数据包列表（.db / .sq）", padding=4)
-        left.pack(fill="both", expand=True)
+        # 横向分栏的窗格走**裁剪式**：拖分隔条时这一侧的左边框不动、内容左对齐。
+        # 面板本身用统一的 `ScrollPanel`（2026-09-13）：**面板里有东西显示不完全**
+        # 就出它自己的滚动条（按钮行被遮住时能在面板底部横向滚，长列表能纵向滚）。
+        panel = ScrollPanel(pan.add_clipped(weight=1), "数据包列表（.db / .sq）")
+        panel.pack(fill="both", expand=True)
+        left = panel.body
+        self.db_panel = panel
         bar = ttk.Frame(left); bar.pack(fill="x", pady=(0,2))
         # 这几个按钮在后台任务期间会被禁用：它们会改 loaded/raws，改了之后
         # 运行中的工作线程再读到就会错（见 _set_busy）。
@@ -305,9 +307,11 @@ class FSToolApp:
                              command=lambda c=cb: invoke_plugin_callback(c, self))
 
     def _build_file_panel(self, pan):
-        # 同上：右侧窗格也是裁剪式 —— 拖分隔条时它的**右边框**（远离分隔条那侧）不动。
-        right = ttk.LabelFrame(pan.add_clipped(weight=2), text="包内文件", padding=4)
-        right.pack(fill="both", expand=True)
+        # 同上：统一的 ScrollPanel（面板内部自己的滚动条，出现条件 = 有东西显示不完全）。
+        panel = ScrollPanel(pan.add_clipped(weight=2), "包内文件")
+        panel.pack(fill="both", expand=True)
+        right = panel.body
+        self.file_panel = panel
         bar = ttk.Frame(right); bar.pack(fill="x", pady=(0,2))
         ttk.Button(bar, text="全选", width=6, command=self._check_all).pack(side="left")
         ttk.Button(bar, text="全不选", width=6, command=self._check_none).pack(side="left", padx=(4,0))

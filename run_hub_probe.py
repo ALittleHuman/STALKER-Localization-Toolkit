@@ -1122,6 +1122,49 @@ def main():
               lambda: _wr["cond_break"])
         check("滚轮规则②：视口滚轮**跳过内层可滚控件**（避免整页跟着一起滚）",
               lambda: _wr["skip_inner"])
+
+        def _scroll_panel_rule():
+            """统一滚动面板：出现条件 = **面板里有东西显示不完全**（用户口径 2026-09-13）。
+
+            用户原话："底下滚动条出现的条件是该窗口有东西显示不完全。包括控件和里面的内容。……
+            这种控件不应该是统一写统一调用的吗？"
+            夹具：面板里放一行 8 个按钮；面板宽 → 装得下（无横向滚动条）；
+            把面板压到 220px → 按钮行显示不完全 → **必须出现**横向滚动条。
+            """
+            import tkinter as _tk
+            top = _tk.Toplevel(root)
+            top.geometry("700x300+2000+2000")
+            try:
+                p = _tw9.ScrollPanel(top, "测试面板")
+                # 注意"宽"必须**真的够宽**：夹具第一版给 700，而这一行 8 个按钮的内容
+                # 实际要 816 —— 于是"宽面板"也出滚动条（那是对的），锁却报红。
+                # 这正是本项目的常客：夹具先要满足前置条件，否则测的是别的东西。
+                p.place(x=0, y=0, width=980, height=220)
+                row = _tk.Frame(p.body)
+                for i in range(8):
+                    ttk.Button(row, text="按钮%d" % i, width=8).pack(side="left", padx=(0, 4))
+                row.pack(fill="x")
+                top.update(); p.refresh(); top.update()
+                wide = bool(p.view.hbar.winfo_manager())
+                p.place_configure(width=220)
+                top.update(); p.refresh(); top.update()
+                narrow = bool(p.view.hbar.winfo_manager())
+                body_w = p.body.winfo_width()
+            finally:
+                try:
+                    top.destroy()
+                except Exception:
+                    pass
+            return {"wide_hbar": wide, "narrow_hbar": narrow, "body_w": body_w}
+
+        _sp = _scroll_panel_rule()
+        print("        统一滚动面板实测：%r" % (_sp,))
+        check("ScrollPanel：装得下时**不出**横向滚动条（宽面板）",
+              lambda: not _sp["wide_hbar"])
+        check("ScrollPanel：★有东西显示不完全时**必须出**横向滚动条（窄面板）",
+              lambda: _sp["narrow_hbar"])
+        check("ScrollPanel：是 LabelFrame 的子类（六页按同一 API 调用）",
+              lambda: issubclass(_tw9.ScrollPanel, ttk.LabelFrame))
         def _hub_window_scroll_wiring():
             """AST：栏目区必须**自己滚**，且**不得**把日志栏塞进窗口级滚动条（用户口径）。
 
