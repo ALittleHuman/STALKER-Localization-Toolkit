@@ -982,8 +982,16 @@ class ScrollViewport(ttk.Frame):
             need_w = vw
             if self._horizontal:
                 need_w = max(self.content.winfo_reqwidth(), self._min_x, vw)
+            # ★**没变就不动**（用户口径 2026-09-13："初始化的时候组件加载速度特别慢"）：
+            # `_watch_req` 每 250ms 会调到这里，而每次 `itemconfigure`/`scrollregion`
+            # 都会让 Tk 重排这一整个子树 —— 无条件重设等于给界面挂了个持续的整页重排泵，
+            # 面板/视口一多（一页十几个）就把加载拖成"秒级"。这里短路掉无变化的调用。
+            if (need_w, need_h) == getattr(self, "_applied", None):
+                return
+            self._applied = (need_w, need_h)
             self.canvas.itemconfigure(self._win, width=need_w, height=need_h)
             self.canvas.configure(scrollregion=(0, 0, need_w, need_h))
+
             # ★**自校正**：往内容里加控件改变的是它的"请求尺寸"，而**不改变它的实际尺寸**
             # —— Tk 因此不发 `<Configure>`，`_sync` 不会再来一次，视口就永远停在
             # "装得下"的旧判断上：内容被裁、滚动条却不出现（2026-09-13 真页面审计实测：
@@ -1031,6 +1039,8 @@ class ScrollViewport(ttk.Frame):
         `stalker_toolkit` 里的 `_wheel_router`）。
         """
         try:
+            if not wheel_claim():
+                return "break"          # 这次滚轮已归别人：自己不动，也别再往外传
             before = self.canvas.yview()
             if before == (0.0, 1.0):
                 return False                      # 装得下
@@ -1229,6 +1239,22 @@ class AutoScrollbar(ttk.Scrollbar):
             self.grid(**kw)
         else:
             self.place(**kw)
+
+
+# ── 滚轮独占闸门（用户口径 2026-09-13："一次只有一个滚动条能动"）──────────────
+# 一个滚轮事件只允许**第一个能滚的控件**滚动；同一时刻的其余滚动动作一律不生效。
+# 为什么需要它：滚轮会同时到达"指针下控件的自身绑定"（树的 canvas）与"顶层统一路由"，
+# 两边各自判断、各自滚一次，用户就会看到小滚动条与大滚动条一起动。
+_WHEEL_CLAIM = [0.0]
+
+
+def wheel_claim(win=0.06):
+    """声明这次滚轮由我处理；`win` 秒内已被别人声明过则返回 False（这次不动）。"""
+    now = time.time()
+    if now - _WHEEL_CLAIM[0] < win:
+        return False
+    _WHEEL_CLAIM[0] = now
+    return True
 
 
 def vscrollbar(parent, target):
@@ -1709,7 +1735,12 @@ class CanvasTree:
         用户口径 2026-09-13："不能在隐藏滚动条的那些小窗口操控，这很反直觉。"
         原来这里无条件 `return "break"` —— 树滚不动（只有几行/已到底）时也把事件吃掉，
         于是鼠标停在树上时**整页滚不动**。改成只在"yview 真的变了"时 break。
+
+        另加"滚轮独占"（同一天用户："一次只有一个滚动条能动"）：这一次滚轮若已被
+        别的控件（外层视口）声明，树就不动，也不再往外传。
         """
+        if not wheel_claim():
+            return "break"
         before = self.canvas.yview()
         self.canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
         after = self.canvas.yview()
