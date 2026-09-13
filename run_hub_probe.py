@@ -864,6 +864,59 @@ def main():
             return built and done_hook
         check("AST：Hub 建了加载遮罩，且把收尾（stop）挂进装配 on_done", _busy_wired)
 
+        # ── [10] 真启动一次程序（补上"CI 全绿但程序起不来"的缺口）──────────────
+        # 2026-09-13 实况：`ScrollViewport(..., min_y=...)` 参数名写错（应为 minsize_y）
+        # → 启动即 TclError: unknown option "-min_y"，**程序根本起不来**；
+        # 而当时 ext/app/functional/build/hub/qt 全部 PASS —— 因为没有任何一条探针
+        # 真的把程序跑起来过。这一节就干这件事：**起一个真进程、看它能不能活过启动期**。
+        # 代价：跑闸门时会有一个窗口闪一下（8 秒内自动关掉）。
+        print("\n[10] 真启动一次程序（子进程，检查能否活过启动期）")
+        import subprocess as _sp_boot
+        import sys as _sys
+
+        def _app_boots():
+            import io as _io2          # 本节跑在 [8] 之前，那里才 import io
+            import tempfile
+            out_p = os.path.join(tempfile.gettempdir(), "dsh_boot_probe_out.txt")
+            err_p = os.path.join(tempfile.gettempdir(), "dsh_boot_probe_err.txt")
+            env = dict(os.environ)
+            env["PYTHONIOENCODING"] = "utf-8"
+            alive = False
+            err_text = ""
+            with _io2.open(out_p, "w", encoding="utf-8") as fo, \
+                    _io2.open(err_p, "w", encoding="utf-8") as fe:
+                proc = _sp_boot.Popen([_sys.executable, "stalker_toolkit.py"], cwd=BASE,
+                                 stdout=fo, stderr=fe, env=env)
+                try:
+                    t0 = time.time()
+                    while time.time() - t0 < 8.0:
+                        if proc.poll() is not None:
+                            break
+                        time.sleep(0.2)
+                    alive = proc.poll() is None
+                finally:
+                    if proc.poll() is None:
+                        try:
+                            proc.terminate()
+                            proc.wait(timeout=10)
+                        except Exception:
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+            try:
+                err_text = _io2.open(err_p, encoding="utf-8", errors="replace").read()[-1500:]
+            except Exception:
+                pass
+            return {"alive": alive, "err": err_text}
+
+        _boot = _app_boots()
+        print("        实测：alive=%s%s" % (_boot["alive"],
+              ("  尾部错误=" + _boot["err"][-300:]) if _boot["err"] else ""))
+        check("★真启动：程序能活过启动期（起不来会在这里红，而不是只在用户机器上炸）",
+              lambda: _boot["alive"])
+        check("★真启动：启动期没有异常回溯（stderr 无 Traceback）",
+              lambda: "Traceback" not in _boot["err"])
         def _hub_layout_wiring():
             """AST：栏目页**必须**向上传递高度；两栏都要有 minsize。
 

@@ -243,7 +243,10 @@ if __name__ == "__main__":
             # 内容视口（fit="content" + page_min_h() 下限）——
             #   窗口够高 → 页面铺满；不够高 → 页面**内部**滚动，标签条照旧在顶上。
             # 页面的请求高度仍然很小（视口撑着），所以不会把日志栏挤掉（那条老问题不复发）。
-            page_view = ScrollViewport(tab, fit="content", min_y=page_min_h())
+            # 注意参数名是 `minsize_y`（构造参数），`_min_y` 只是内部属性 ——
+            # 我第一版写成 `min_y=` 直接 TclError: unknown option，**程序起不来**，
+            # 而当时 CI 全绿：因为没有一条探针真的启动过 Hub（缺口已补，见 run_hub_probe [10]）。
+            page_view = ScrollViewport(tab, fit="content", minsize_y=page_min_h())
             page_view.pack(fill="both", expand=True)
             try:
                 apps[label] = factory(page_view.content)
