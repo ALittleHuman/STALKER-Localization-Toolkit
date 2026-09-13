@@ -655,11 +655,12 @@ def dir_row(parent, label, var, browse=None, drop=None, add=None, width=8, state
     from tkinter import ttk as _ttk
     from tkinter import Entry as _Entry
     row = _ttk.Frame(parent)
-    # 留白（2026-09-13 排版统一）：组内行距 6、行与行之间靠这个 pady 拉开。
-    # 原来只有 4px，六个页面里"输入/输出/搜索"这几行会挤成一片。
-    row.pack(fill="x", pady=(0, 6))
+    # **间距恢复原样**（用户 2026-09-13："关于控件对齐的代码也出了问题"）：
+    # 我把这里的行距 4→6、输入框内边距 3→4、标签与按钮的 padx 也加了 —— 六个页面的
+    # 纵向对齐随之变化（标签列与输入框不再对齐）。用户没有要求过，撤回。
+    row.pack(fill="x", pady=(0, 4))
     if label:
-        _ttk.Label(row, text=label, width=width).pack(side="left", padx=(0, 6))
+        _ttk.Label(row, text=label, width=width).pack(side="left")
     e = _Entry(row, textvariable=var, bg=color("entry_bg"), fg=color("text"),
                insertbackground=color("text"), relief="flat", bd=0,
                disabledbackground=color("entry_bg"), disabledforeground=color("text"),
@@ -667,7 +668,7 @@ def dir_row(parent, label, var, browse=None, drop=None, add=None, width=8, state
                highlightcolor=color("accent"), font=T["font_mono"])
     if state:
         e.configure(state=state)
-    e.pack(side="left", fill="x", expand=True, ipady=4)
+    e.pack(side="left", fill="x", expand=True, ipady=3)
     if drop is not None:
         try:
             if hasattr(e, "drop_target_register"):
@@ -676,9 +677,9 @@ def dir_row(parent, label, var, browse=None, drop=None, add=None, width=8, state
         except Exception:
             pass
     if browse:
-        _ttk.Button(row, text="浏览", width=6, command=browse).pack(side="left", padx=(8, 0))
+        _ttk.Button(row, text="浏览", width=6, command=browse).pack(side="left", padx=(6, 0))
     if add:
-        _ttk.Button(row, text=add[0], width=6, command=add[1]).pack(side="left", padx=(6, 0))
+        _ttk.Button(row, text=add[0], width=6, command=add[1]).pack(side="left", padx=(4, 0))
     install_blank_click_unfocus(e)          # 点空白处能取消输入框的焦点/选中
     return row, e
 
@@ -728,22 +729,15 @@ def tool_text(parent, text, kind="body", **pack_kw):
 
 
 def tool_header(parent, text, **pack_kw):
-    """统一工具页大标题 (tool_text 的 title 别名) + 一条极细分隔线。
+    """统一工具页大标题 (tool_text 的 title 别名)。
 
-    用户授权（2026-09-13）"布局和交互也可以动，按你的审美来"。
-    大标题下面那条 1px 弱线是**信息层级**的锚点：它把"页面标题"和"下面的表单"
-    在视觉上分成两层，比加粗或用更亮的字更省地方。用弱色（border）而不是强调色，
-    免得六个页面各飘一条蓝线。
+    **恢复原样**（用户 2026-09-13："关于控件对齐的代码也出了问题"）：我曾在这里加了一层
+    wrapper Frame + 一条 `ttk.Separator`，那会改变标题所在容器与内边距 → 六个页面的
+    对齐随之变化。用户没有要求过这个，撤回。
     """
-    wrap = ttk.Frame(parent)
-    kw = {"anchor": "w", "padx": 14, "pady": (12, 0)}
+    kw = {"anchor": "w", "padx": 14, "pady": (14, 2)}
     kw.update(pack_kw)
-    wrap.pack(fill="x")
-    lbl = tool_text(wrap, text, kind="title", **kw)
-    # 用 ttk.Separator 而不是 tk.Frame：它的颜色由 `TSeparator` 样式给（= 主题的 border），
-    # 切亮/暗主题时**自动**跟着变；tk.Frame 得自己接进 recolor 链路，反而多一处会忘的接线。
-    ttk.Separator(wrap, orient="horizontal").pack(fill="x", padx=14, pady=(6, 8))
-    return lbl
+    return tool_text(parent, text, kind="title", **kw)
 
 class ScrollPanel(ttk.LabelFrame):
     """**统一滚动面板**：带标题的面板 + 内部视口（横/纵滚动条自动隐藏）。
@@ -843,24 +837,18 @@ class ScrollViewport(ttk.Frame):
         #   （用户口径 2026-09-13："日志是不归主窗口滚动条管的" —— 反过来栏目区该自己管自己）。
         self._fit = fit if fit in ("viewport", "content") else "viewport"
         self.canvas = tk.Canvas(self, bg=color("bg"), highlightthickness=0, bd=0)
-        self.vbar = AutoScrollbar(self, orient="vertical", command=self.canvas.yview)
-        self.hbar = (AutoScrollbar(self, orient="horizontal", command=self.canvas.xview)
+        # 两条滚动条都用 **pack**（留位语义：滚动条占自己那一条，内容不会被压到它底下；
+        # place 那版是盖在内容上的，用户已明确否决）。显隐时由**宿主**按下面的
+        # `_layout_bars` 整组重排 —— 不靠 AutoScrollbar 去猜"放回时插在谁前面"。
+        self.vbar = AutoScrollbar(self, orient="vertical", command=self.canvas.yview,
+                                  relayout=self._layout_bars)
+        self.hbar = (AutoScrollbar(self, orient="horizontal", command=self.canvas.xview,
+                                   relayout=self._layout_bars)
                      if self._horizontal else None)
         self.canvas.configure(yscrollcommand=self.vbar.set)
-        # ★滚动条一律用 **place 显式定位**，不用 pack。
-        # 为什么（2026-09-13 实测，用户："我横向滚动条呢？我正常的大滚动条呢？"）：
-        #   pack 按顺序分配空间，画布是 `expand=True`；滚动条被自动隐藏过再放回来时
-        #   空间已经被画布吃掉 → 实测 `manager=pack 宽=1 高=1 可见=0`
-        #   —— 滚动条"存在"却根本看不见（我上一版审计只查了 manager，于是假阳性）。
-        #   place 不参与空间分配、也不受顺序影响；隐藏/放回就是 place_forget / place(**kw)，
-        #   与 AutoScrollbar 已有的 `_geom` 机制天然吻合。
-        self._bar = max(10, px(10))          # 滚动条厚度（设计值 10px × 缩放）
         if self.hbar is not None:
             self.canvas.configure(xscrollcommand=self.hbar.set)
-            self.hbar.place(x=0, rely=1.0, anchor="sw", relwidth=1.0, height=self._bar)
-        self.vbar.place(relx=1.0, y=0, anchor="ne", relheight=1.0, width=self._bar)
-        self.canvas.place(x=0, y=0, relwidth=1.0, relheight=1.0)
-        self._bars_place = True
+        self._layout_bars()
         self.content = tk.Frame(self.canvas, bg=color("bg"))
         self.content._scroll_viewport = self     # 主题切换遍历时能找回视口
         self._win = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
@@ -874,6 +862,46 @@ class ScrollViewport(ttk.Frame):
             self._watch_after = self.after(250, self._watch_req)
         except Exception:
             self._watch_after = None
+
+    def _layout_bars(self):
+        """按**规范顺序**重排视口里的成员：两条滚动条先占边，画布最后 `expand` 吃剩余。
+
+        为什么必须整组重排（2026-09-13 实测根因，两个症状同一个因）：
+        `pack` 是"先到先得 + expand 吃剩余"。滚动条一旦排在 `expand=True` 的画布
+        **后面**，它就只能从"已经被吃光的剩余空间"里分：
+
+          * 分到 0 → Tk 直接把没空间的 slave **unmap**，于是 `winfo_manager()='pack'`
+            却 `1x1`、`winfo_ismapped()=0` —— 滚动条"存在但看不见"
+            （真页面实测：`页0 文件系统 #2 横条 mgr='' 605x15 map=0`，内容 1072 > 画布）；
+          * 分到一点残渣 → 变成贴在画布右边的 **44x15 小方块**
+            （实测：`hbar pack 44x15 map=1 @582,455`，画布被挤到 582 宽）——
+            这正是用户问的"我正常的大滚动条呢？"。
+
+        旧实现靠"收起前记住我后面挨着谁、放回时 `pack(before=它)`"来保序，可是那个
+        兄弟**自己也刚被隐藏**时 Tk 会抛 `TclError: window ... isn't packed`，
+        而 `_apply` 的 `except` 把它吞了 —— 状态从此彻底错乱、再也不重试。
+        **顺序不能靠记忆**（兄弟的显隐是独立的），只能每次显式重排。
+
+        为什么不干脆用 place：用户口径 2026-09-13 —— place 出来的滚动条**盖在内容上**
+        且占了内容区（"我不认识你放在本来应该给滚动条留下的地方的东西"），已撤回。
+        pack 的留位语义是硬要求，所以要保住的是**顺序**，不是绕开 pack。
+        """
+        hbar = getattr(self, "hbar", None)
+        vbar = getattr(self, "vbar", None)
+        for w in (hbar, vbar, self.canvas):
+            if w is None:
+                continue
+            try:
+                w.pack_forget()
+            except Exception:
+                pass
+        # 顺序：横条（底边）→ 竖条（右边）→ 画布（左边 + expand 吃剩余）。
+        # 没轮到的滚动条不 pack，等于"藏起来且不占位"。
+        if hbar is not None and hbar.visible():
+            hbar.pack(side="bottom", fill="x")
+        if vbar is not None and vbar.visible():
+            vbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
 
     def _stop_watch(self):
         h = getattr(self, "_watch_after", None)
@@ -1027,37 +1055,81 @@ class AutoScrollbar(ttk.Scrollbar):
 
     滚动条不该常驻：装得下的时候它是纯噪声，还白占宽度、把内容挤窄。
     Tk 的 `ttk.Scrollbar` 没有这个能力，只能在组件层实现。
+
+    ## 2026-09-13 实测根因（"我横向滚动条呢？"）
+
+    收起/出现用 `pack_forget()` + `pack()` 实现，于是**放回来的位置**决定生死：
+    `pack` 先到先得，排在 `expand=True` 的兄弟后面就只能分残渣 —— 分到 0 时
+    Tk 直接 unmap，`winfo_manager()='pack'` 却 `1x1`/`ismapped()=0`；分到一点
+    就是贴在旁边的小方块。旧的"记住我后面挨着谁、`before=它` 放回"还会在那个
+    兄弟**同样被隐藏**时抛 `TclError: window ... isn't packed`，而异常被吞掉，
+    状态从此错乱且不再重试。
+
+    两条对策，配合使用：
+
+    * `relayout=`：宿主提供"整组重排"回调（见 `ScrollViewport._layout_bars`）——
+      顺序由**宿主**按自己的布局设计决定，不靠这里猜；有它时本类不再记顺序。
+    * 没有 `relayout` 时退回"记整条尾巴、挑第一个还在 pack 里的当锚点"：
+      `pack -before` 只认此刻真的被 pack 着的兄弟，所以绝不能指向已被收起的那个。
     """
 
-    def __init__(self, master=None, **kw):
+    def __init__(self, master=None, relayout=None, **kw):
         super().__init__(master, **kw)
         self._geom = None          # ("pack"/"grid"/"place", kwargs) —— 调用方的布局参数
-        self._visible = True
+        self._visible = True       # 我们此刻有没有把它布局出来（= 该不该看得见）
         self._needed = None
-        self._pack_before = None   # pack 放回来时要插在谁前面（见 pack/_show）
+        self._pack_after = []      # 我后面的兄弟（pack 顺序），放回时用来挑锚点
+        self._relayout = relayout  # 宿主提供的整组重排回调（可选，见类文档）
 
     # ── 记住调用方的布局参数（三种几何管理器都覆盖）────────────────────
     def pack(self, **kw):
         self._geom = ("pack", dict(kw))
         r = super().pack(**kw)
-        # ★记住**原来的顺序位置**：pack 是"先到先得"，放回来时若排到最后，
-        # 已经被 expand=True 的画布吃光空间 → 滚动条拿到 **0 尺寸**（存在但看不见）。
-        # 2026-09-13 用户实机："我横向滚动条呢？我正常的大滚动条呢？" —— 两个症状同因。
-        try:
-            slaves = list(self.master.pack_slaves())
-            i = slaves.index(self)
-            self._pack_before = slaves[i + 1] if i + 1 < len(slaves) else None
-        except Exception:
-            self._pack_before = None
+        self._remember_order()
+        if not self._visible:
+            # 构建期就已经判定"装得下"（`set()` 早于调用方的布局）→ 别露出来。
+            # 旧实现只在 `_hide()` 里改标志、这里照 pack，于是"状态说该藏、实际显示着"。
+            super().pack_forget()
         return r
 
     def grid(self, **kw):
         self._geom = ("grid", dict(kw))
-        return super().grid(**kw)
+        r = super().grid(**kw)
+        if not self._visible:
+            self.grid_remove()
+        return r
 
     def place(self, **kw):
         self._geom = ("place", dict(kw))
-        return super().place(**kw)
+        r = super().place(**kw)
+        if not self._visible:
+            super().place_forget()
+        return r
+
+    def _remember_order(self):
+        """记下"我后面还有哪些兄弟"（按 pack 顺序）。
+
+        Tk 的 `pack -before` 只认**此刻真的被 pack 着**的兄弟；指向一个已经
+        `pack_forget()` 的兄弟会抛 `TclError: window ... isn't packed`
+        （2026-09-13 实测：横条放回时的锚点是同样刚被收起的竖条）。
+        所以记的是**整条尾巴**，放回时从中挑第一个"还活着且还在 pack 里"的当锚点；
+        尾巴里一个可用的都没有，就追加到末尾（= 我本来就是最后一个）。
+        """
+        try:
+            slaves = list(self.master.pack_slaves())
+            i = slaves.index(self)
+            self._pack_after = slaves[i + 1:]
+        except Exception:
+            self._pack_after = []
+
+    def _anchor(self):
+        for w in getattr(self, "_pack_after", ()):
+            try:
+                if w.winfo_exists() and w.winfo_manager() == "pack":
+                    return w
+            except Exception:
+                continue
+        return None
 
     # ── 由被滚控件回调 ────────────────────────────────────────────────
     def set(self, first, last):
@@ -1066,8 +1138,12 @@ class AutoScrollbar(ttk.Scrollbar):
         except (TypeError, ValueError):
             return                      # 控件销毁时 Tk 会发空串，保持现状
         needed = not (lo <= 0.0 and hi >= 1.0)
-        if needed != self._needed:
-            self._needed = needed
+        self._needed = needed
+        # ★比的是 `_visible`（真的布局着没有），不是上一次的判定：
+        # 上一次 `_show()` 失败时 `_visible` 仍是 False，只有这样才能**重试** ——
+        # 旧实现比的是上一次判定，失败之后 `_needed` 已经是 True，后续 set() 全被
+        # "状态没变"挡掉，滚动条**永远**看不见（1x1 / ismapped=0）。
+        if needed != self._visible:
             self._apply(needed)
         try:
             super().set(first, last)    # 交给 ttk.Scrollbar 画滑块位置
@@ -1079,55 +1155,62 @@ class AutoScrollbar(ttk.Scrollbar):
         return self._needed
 
     def visible(self):
+        """此刻有没有把它布局出来（宿主的重排回调据此决定谁上场）。"""
         return self._visible
 
     # ── 出现/收起 ─────────────────────────────────────────────────────
     def _apply(self, needed):
+        """按 needed 放上/撤下滚动条；**失败绝不留下假状态**。
+
+        旧实现在这里 `except Exception: pass`，而 `_show()` 的 `finally` 仍把
+        `_visible` 置 True —— 实测留下的正是"记录说显示了、实际没 pack"：
+        `winfo_manager()` 空、`1x1`、`winfo_ismapped()==0`，且再也不重试。
+        这里改成：先置状态（重排回调要读 `visible()`），失败就回滚 ——
+        回滚之后 `_visible` 与 `needed` 又不一致，下一次 `set()` 自然重试。
+        """
+        prev = self._visible
+        self._visible = needed
         try:
-            if needed and not self._visible:
+            if needed:
                 self._show()
-            elif not needed and self._visible:
+            else:
                 self._hide()
         except Exception:
-            pass
+            self._visible = prev
 
     def _hide(self):
-        if self._geom is None:
-            # 还没布局过（构建期就收到了 set）——只记状态，等调用方 pack/grid 时
-            # 由 `_needed` 在下次 set 时处理；此时它本来也没显示，不算错。
-            self._visible = False
+        if self._relayout is not None:
+            self._relayout()            # 顺序归宿主管，这里只管状态
             return
+        if self._geom is None:
+            return                      # 调用方还没布局过：本来就没显示，不算错
         kind = self._geom[0]
-        try:
-            if kind == "pack":
-                super().pack_forget()
-            elif kind == "grid":
-                self.grid_remove()      # grid_remove 会记住格位，放回时不用重算
-            else:
-                self.place_forget()
-        finally:
-            self._visible = False
+        self._remember_order()          # 收起前顺序还是完整的，先记下来
+        if kind == "pack":
+            super().pack_forget()
+        elif kind == "grid":
+            self.grid_remove()          # grid_remove 会记住格位，放回时不用重算
+        else:
+            self.place_forget()
 
     def _show(self):
-        if self._geom is None:
-            self._visible = True
+        if self._relayout is not None:
+            # 顺序交给宿主：**它才知道**哪条边先占、谁最后 expand（见 ScrollViewport）。
+            self._relayout()
             return
+        if self._geom is None:
+            return                      # 调用方还没布局；它 pack/grid 时会按 _visible 补上
         kind, kw = self._geom
-        try:
-            if kind == "pack":
-                # **带 before 放回原位**（排到最后会被 expand=True 的画布挤成 0 尺寸 →
-                # 滚动条"存在但看不见"，这正是用户两次问的那件事）。
-                before = getattr(self, "_pack_before", None)
-                if before is not None and before.winfo_exists():
-                    super().pack(before=before, **kw)
-                else:
-                    super().pack(**kw)
-            elif kind == "grid":
-                self.grid(**kw)
+        if kind == "pack":
+            before = self._anchor()
+            if before is not None and "before" not in kw:
+                super().pack(before=before, **kw)
             else:
-                self.place(**kw)
-        finally:
-            self._visible = True
+                super().pack(**kw)
+        elif kind == "grid":
+            self.grid(**kw)
+        else:
+            self.place(**kw)
 
 
 class BusyOverlay(tk.Frame):

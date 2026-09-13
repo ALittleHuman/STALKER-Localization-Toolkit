@@ -328,32 +328,12 @@ def apply_theme(mode=None):
                     bordercolor=P["surface2"], lightcolor=P["accent"],
                     darkcolor=P["accent"], thickness=px(8))
     style.configure("TSeparator", background=P["border"])
-    style.configure("TScrollbar", background=P["surface2"], troughcolor=P["bg"],
-                    arrowcolor=P["text_dim"], bordercolor=P["scroll_border"],
+    # **恢复默认外观**（用户 2026-09-13："我之前没说默认的滚动条丑，不要改成我不认识的东西"）。
+    # 我曾用 `style.layout` 去掉两端箭头、把轨道/滑块改成扁平色 —— 属于擅自改观感，撤回。
+    style.configure("TScrollbar", background=P["surface2"], troughcolor=P["surface"],
+                    arrowcolor=P["text"], bordercolor=P["scroll_border"],
                     lightcolor=P["scroll_border"], darkcolor=P["scroll_border"])
-    style.map("TScrollbar", background=[("disabled", P["surface2"]),
-                                        ("active", P["border"])])
-    # ── 现代滚动条：**去掉两端的箭头按钮**，只留细滑块 ─────────────────────
-    # 用户口径 2026-09-13："这滚动条啥玩意？和之前那次一毛一样。这种滚动条你是不会吗？"
-    # 那不是"我造的"外观 —— 是 **ttk clam 主题的默认**：轨道 + 两端 ◀▶/▲▼ 按钮。
-    # 一个 `style.layout` 就能把它换成"只有轨道 + 滑块"的扁平样式，全应用生效
-    # （树、面板内视口、日志、文本框……所有 ttk 滚动条都在这一处定义）。
-    for _o, _st in (("Vertical", "ns"), ("Horizontal", "ew")):
-        _thumb = "%s.Scrollbar.thumb" % _o
-        _trough = "%s.Scrollbar.trough" % _o
-        try:
-            style.layout("%s.TScrollbar" % _o, [
-                (_trough, {"sticky": _st,
-                           "children": [(_thumb, {"expand": "1", "sticky": "nswe"})]})])
-        except Exception:
-            pass
-    # 滑块用 mid 色、轨道用底色（原来轨道比面板还亮，整条都在抢视线）
-    style.configure("TScrollbar", background=P["border"], troughcolor=P["bg"],
-                    bordercolor=P["bg"], lightcolor=P["border"], darkcolor=P["border"],
-                    arrowcolor=P["bg"], arrowsize=1, gripcount=0,
-                    relief="flat", borderwidth=0)
-    style.map("TScrollbar", background=[("active", P["sash_light"]),
-                                        ("disabled", P["surface2"])])
+    style.map("TScrollbar", background=[("disabled", P["surface2"])])
     for _o in ("Vertical", "Horizontal"):
         style.map(f"{_o}.TScrollbar.thumb", background=[("disabled", P["surface2"])])
         style.map(f"{_o}.Scrollbar.thumb", background=[("disabled", P["surface2"])])

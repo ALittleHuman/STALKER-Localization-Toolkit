@@ -63,6 +63,31 @@ def check(name, fn, detail=""):
     print("  PASS %s" % name)
 
 
+def _bar_real(w):
+    """滚动条**真的看得见**：有几何管理器 + 有真实尺寸 + 真的被映射。
+
+    为什么不能只看 `winfo_manager()`（2026-09-13 实测根因）：滚动条"放回来"时如果
+    排在 `expand=True` 的兄弟后面，Tk 会把它裁剪成 0 空间并直接 **unmap** —— 于是
+    `manager='pack'` 却 `1x1`、`winfo_ismapped()==0`：**存在但肉眼看不见**。
+    上一版的锁只查 manager，对这种状态照样给绿灯，正是用户那句
+    "我横向滚动条呢？我正常的大滚动条呢？" 没被任何门禁拦下的原因。
+    尺寸下限取 2：Tk 给不出空间时是 1，而真实滚动条远大于 2 逻辑像素。
+    """
+    try:
+        return (bool(w.winfo_manager()) and w.winfo_ismapped() == 1
+                and w.winfo_width() > 1 and w.winfo_height() > 1)
+    except Exception:
+        return False
+
+
+def _bar_off(w):
+    """滚动条该收起时**真的一点都不占**：没有几何管理器，而且没被映射。"""
+    try:
+        return (not w.winfo_manager()) and w.winfo_ismapped() == 0
+    except Exception:
+        return False
+
+
 def skip(name, why):
     SKIP.append(name)
     print("  SKIP %s（%s）" % (name, why))
@@ -963,7 +988,10 @@ def main():
         def _sb_checks():
             import tkinter as _tk
             top = _tk.Toplevel(root)
-            top.geometry("300x200+2000+2000")
+            # 高度给足：里面有三个 `expand` 的夹具（pack 夹具 / 根因夹具 / grid 夹具）。
+            # 原来只有 200 —— 三个夹具的请求高之和超过它，最后一个就分到 0 空间被 Tk
+            # unmap，"grid 场景可见"那条锁于是量到的是**夹具没地方**，不是被测代码。
+            top.geometry("300x420+2000+2000")
             try:
                 # ① pack 场景：滚动条 + 一个 fill=both expand 的内容块
                 host = _tk.Frame(top, width=300, height=120)
@@ -978,26 +1006,55 @@ def main():
                 # 装得下 → 收起，且内容块拿到整宽
                 sb.set(0.0, 1.0)
                 top.update()
-                hidden = not sb.winfo_manager()        # forget 之后 manager 为空串
+                hidden = _bar_off(sb)                   # 真收起（无 manager + 未映射）
                 w_hidden = body.winfo_width()
                 # 超出 → 出现，内容块让出滚动条宽度
                 sb.set(0.0, 0.4)
                 top.update()
-                shown = bool(sb.winfo_manager())
+                shown = _bar_real(sb)                   # 真出现（有 manager + 有尺寸 + 映射）
                 w_shown = body.winfo_width()
                 # 滞回：0.999 仍算"超出"（不许在临界点闪）
                 sb.set(0.0, 1.0)
                 top.update()
                 sb.set(0.0, 0.999)
                 top.update()
-                hyster = bool(sb.winfo_manager())
+                hyster = _bar_real(sb)
                 # 再装得下 → 又收起
                 sb.set(0.0, 1.0)
                 top.update()
-                back = not sb.winfo_manager()
+                back = _bar_off(sb)
 
-                # ② grid 场景：收起/放回必须回到原来的格位
+                # ③ ★根因回归（2026-09-13）：滚动条收起过、而且**它原位置后面的兄弟
+                # 也同时收起了**，再放回来时旧实现把 `before=` 指向那个已经
+                # `pack_forget` 的兄弟 → TclError 被 `except` 吞掉 → 记录说"显示了"
+                # 却根本没 pack：`manager='pack'`、`1x1`、`ismapped()=0`，而且永远不重试。
+                # 夹具照 ScrollViewport 的真实顺序：横条(bottom) → 竖条(right) → 内容(left,expand)。
+                fx = _tk.Frame(top, width=300, height=120)
+                fx.pack(fill="both", expand=True)
+                fx.pack_propagate(False)
+                fx_h = _tw.AutoScrollbar(fx, orient="horizontal")
+                fx_v = _tw.AutoScrollbar(fx, orient="vertical")
+                fx_body = _tk.Frame(fx, bg="#222222")
+                fx_h.pack(side="bottom", fill="x")
+                fx_v.pack(side="right", fill="y")
+                fx_body.pack(side="left", fill="both", expand=True)
+                top.update()
+                fx_h.set(0.0, 1.0)                     # 两条都收起
+                fx_v.set(0.0, 1.0)
+                top.update()
+                fx_h.set(0.0, 0.4)                     # 只让横条回来（竖条此刻仍是收起的）
+                top.update()
+                fx_real = _bar_real(fx_h)
+                fx_geo = (fx_h.winfo_manager() or "-", fx_h.winfo_width(),
+                          fx_h.winfo_height(), fx_h.winfo_ismapped())
+
+                # ② grid 场景：收起/放回必须回到原来的格位（且真的可见）
                 g = _tk.Frame(top)
+                # ★夹具自己也要**真的在屏幕上**：judgement 现在含 `winfo_ismapped()`，
+                # 而没被任何几何管理器接管的 Frame 里的控件一律 unmapped ——
+                # 那样量到的是夹具的毛病，不是被测代码的（本项目的老教训：
+                # "夹具先要满足前置条件，否则测的是别的东西"）。
+                g.pack(fill="both", expand=True, pady=(4, 0))
                 g.grid_columnconfigure(0, weight=1)
                 tree = _tk.Frame(g, width=120, height=80)
                 gsb = _tw.AutoScrollbar(g, orient="vertical")
@@ -1006,8 +1063,12 @@ def main():
                 top.update()
                 before = dict(gsb.grid_info())
                 gsb.set(0.0, 1.0); top.update()
-                g_hidden = not gsb.winfo_manager()
+                g_hidden = _bar_off(gsb)
                 gsb.set(0.0, 0.2); top.update()
+                g_shown = _bar_real(gsb)
+                g_geo = (gsb.winfo_manager() or "-", gsb.winfo_width(), gsb.winfo_height(),
+                         gsb.winfo_ismapped(), g.winfo_ismapped(), g.winfo_width(),
+                         g.winfo_height())
                 after = dict(gsb.grid_info())
                 same_cell = (str(before.get("row")) == str(after.get("row"))
                              and str(before.get("column")) == str(after.get("column"))
@@ -1019,7 +1080,9 @@ def main():
                     pass
             return {"hidden": hidden, "shown": shown, "back": back, "hyster": hyster,
                     "w_hidden": w_hidden, "w_shown": w_shown,
-                    "g_hidden": g_hidden, "same_cell": same_cell}
+                    "fx_real": fx_real, "fx_geo": fx_geo,
+                    "g_hidden": g_hidden, "g_shown": g_shown, "g_geo": g_geo,
+                    "same_cell": same_cell}
 
         _sb = _sb_checks()
         print("        实测：%r" % (_sb,))
@@ -1029,8 +1092,10 @@ def main():
               lambda: _sb["w_hidden"] > _sb["w_shown"])
         check("AutoScrollbar：临界点有滞回（hi=0.999 仍显示，不许闪烁）",
               lambda: _sb["hyster"])
-        check("AutoScrollbar：grid 场景收起/放回回到原来的格位",
-              lambda: _sb["g_hidden"] and _sb["same_cell"])
+        check("★AutoScrollbar 根因回归：锚点兄弟也被收起时，放回来仍要有真实尺寸且可见",
+              lambda: _sb["fx_real"], "实测 %r" % (_sb["fx_geo"],))
+        check("AutoScrollbar：grid 场景收起/放回回到原来的格位（且真的可见）",
+              lambda: _sb["g_hidden"] and _sb["g_shown"] and _sb["same_cell"])
         check("AutoScrollbar 是 ttk.Scrollbar 的子类（调用方可当它用）",
               lambda: issubclass(_tw.AutoScrollbar, ttk.Scrollbar))
         check("toolkit 导出 AutoScrollbar（六个 App 从 toolkit 取）",
@@ -1073,15 +1138,22 @@ def main():
                 inner.pack()
                 top.update()
                 vp._sync(); top.update()
-                big_v = bool(vp.vbar.winfo_manager())
-                big_h = bool(vp.hbar.winfo_manager())
+                # ★判据是**真几何 + 真可见性**，不是 `winfo_manager()`：实测过
+                # `manager='pack'` 却 `1x1`/`ismapped()=0`（存在但看不见），只查
+                # manager 的旧锁对这种状态照样报绿。
+                big_v = _bar_real(vp.vbar)
+                big_h = _bar_real(vp.hbar)
+                big_geo = ((vp.vbar.winfo_manager() or "-", vp.vbar.winfo_width(),
+                            vp.vbar.winfo_height(), vp.vbar.winfo_ismapped()),
+                           (vp.hbar.winfo_manager() or "-", vp.hbar.winfo_width(),
+                            vp.hbar.winfo_height(), vp.hbar.winfo_ismapped()))
                 w_big = vp.content.winfo_width()
                 # 视口放大到 700x600（比 minsize_y 高）→ 两条滚动条都该收起、内容铺满
                 vp.place_configure(width=700, height=600)
                 top.update()
                 vp._sync(); top.update()
-                small_v = not vp.vbar.winfo_manager()
-                small_h = not vp.hbar.winfo_manager()
+                small_v = _bar_off(vp.vbar)
+                small_h = _bar_off(vp.hbar)
                 w_small = vp.content.winfo_width()
                 # 竖向：minsize_y 生效（内容比视口矮时也不低于 minsize）
                 vp.place_configure(width=700, height=120)
@@ -1097,7 +1169,7 @@ def main():
                 tall.pack()
                 top.update()
                 vp3._sync(); top.update()
-                regress_v = not vp3.vbar.winfo_manager()      # 不该出滚动条
+                regress_v = _bar_off(vp3.vbar)               # 不该出滚动条
                 regress_h = vp3.content.winfo_height()        # 应等于视口高
                 # ★ fit="content"（栏目区 pane 用）：内容**保持自己需要的高度**，视口矮了就滚。
                 # 用户口径 2026-09-13："日志是不归主窗口滚动条管的" → 反过来栏目区要自己管自己。
@@ -1106,7 +1178,7 @@ def main():
                 _tk.Frame(vp4.content, width=100, height=700, bg="#333333").pack()
                 top.update()
                 vp4._sync(); top.update()
-                content_scrolls = bool(vp4.vbar.winfo_manager())
+                content_scrolls = _bar_real(vp4.vbar)
                 content_h = vp4.content.winfo_height()
                 # 纵向视口：内容横向必须铺满（否则页面会留一条缝）
                 vp2 = _tw.ScrollViewport(top, horizontal=False)
@@ -1120,7 +1192,7 @@ def main():
                     top.destroy()
                 except Exception:
                     pass
-            return {"big_v": big_v, "big_h": big_h, "w_big": w_big,
+            return {"big_v": big_v, "big_h": big_h, "w_big": w_big, "big_geo": big_geo,
                     "small_v": small_v, "small_h": small_h, "w_small": w_small,
                     "content_scrolls": content_scrolls, "content_h": content_h,
                     "h_min": h_min, "fill_w": fill_w,
@@ -1129,7 +1201,8 @@ def main():
         _vp = _viewport_checks()
         print("        实测：%r" % (_vp,))
         check("ScrollViewport：minsize_y 大于视口高 → 纵向滚动条出现（横向超宽 → 横向也出现）",
-              lambda: _vp["big_v"] and _vp["big_h"])
+              lambda: _vp["big_v"] and _vp["big_h"],
+              "滚动条真几何（manager/宽/高/ismapped）=%r" % (_vp["big_geo"],))
         check("ScrollViewport：视口比 minsize_y 高 → 两条滚动条都收起，内容铺满",
               lambda: _vp["small_v"] and _vp["small_h"])
         check("ScrollViewport：内容**不被压扁**（保持自然宽度 500，而不是被拉到视口宽）",
@@ -1198,24 +1271,39 @@ def main():
                     ttk.Button(row, text="按钮%d" % i, width=8).pack(side="left", padx=(0, 4))
                 row.pack(fill="x")
                 top.update(); p.refresh(); top.update()
-                wide = bool(p.view.hbar.winfo_manager())
+                # ★"不出/出"都按真几何判定：装得下 → 真收起（无 manager + 未映射）；
+                # 装不下 → 真有尺寸 + 真映射。只查 manager 会漏掉
+                # `manager='pack'` 却 `1x1`/`ismapped()=0` 那种"存在但看不见"。
+                wide_hidden = _bar_off(p.view.hbar)
                 p.place_configure(width=220)
                 top.update(); p.refresh(); top.update()
-                narrow = bool(p.view.hbar.winfo_manager())
+                narrow_real = _bar_real(p.view.hbar)
+                narrow_vw = p.view.winfo_width()
+                # ★还要**占满自己那一条**：实测过的坏形态是贴在画布右边的
+                # `44x15` 小方块 —— 有 manager、ismapped=1、也有尺寸，只是短，
+                # 只查前三条都拦不住（用户："我正常的大滚动条呢？"）。
+                narrow_spans = (p.view.hbar.winfo_width() >= narrow_vw - 2)
+                narrow_geo = (p.view.hbar.winfo_manager() or "-", p.view.hbar.winfo_width(),
+                              p.view.hbar.winfo_height(), p.view.hbar.winfo_ismapped(),
+                              "视口宽 %d" % narrow_vw)
                 body_w = p.body.winfo_width()
             finally:
                 try:
                     top.destroy()
                 except Exception:
                     pass
-            return {"wide_hbar": wide, "narrow_hbar": narrow, "body_w": body_w}
+            return {"wide_hidden": wide_hidden, "narrow_real": narrow_real,
+                    "narrow_spans": narrow_spans, "narrow_geo": narrow_geo,
+                    "body_w": body_w}
 
         _sp = _scroll_panel_rule()
         print("        统一滚动面板实测：%r" % (_sp,))
-        check("ScrollPanel：装得下时**不出**横向滚动条（宽面板）",
-              lambda: not _sp["wide_hbar"])
-        check("ScrollPanel：★有东西显示不完全时**必须出**横向滚动条（窄面板）",
-              lambda: _sp["narrow_hbar"])
+        check("ScrollPanel：装得下时**不出**横向滚动条（宽面板，真收起）",
+              lambda: _sp["wide_hidden"])
+        check("ScrollPanel：★有东西显示不完全时**必须出**横向滚动条"
+              "（窄面板，真尺寸 + ismapped + 占满自己那一条）",
+              lambda: _sp["narrow_real"] and _sp["narrow_spans"],
+              "滚动条真几何=%r" % (_sp["narrow_geo"],))
         check("ScrollPanel：是 LabelFrame 的子类（六页按同一 API 调用）",
               lambda: issubclass(_tw9.ScrollPanel, ttk.LabelFrame))
         def _hub_window_scroll_wiring():

@@ -335,7 +335,8 @@ def main():
     # 扩展点阀门与构造级闸门：把"注册成功但无人消费"和"方法体内隐式初始化"
     # 这两类 run_ci 只 import 抓不到的缺陷变成机器可查。
     for script, title in (("run_ext_probe.py", "run_ext_probe (扩展点端到端)"),
-                          ("run_app_probe.py", "run_app_probe (构造级 + 入口级)")):
+                          ("run_app_probe.py", "run_app_probe (构造级 + 入口级)"),
+                          ("run_scroll_audit.py", "run_scroll_audit (真页面滚动条几何)")):
         step(title)
         path = os.path.join(HERE, script)
         if not os.path.isfile(path):
@@ -404,6 +405,7 @@ def main():
                                "run_ci.py", "run_ui_smoke.py", "run_ext_probe.py",
                                "run_app_probe.py", "run_functional_probe.py",
                                "run_build_probe.py", "run_hub_probe.py",
+                               "run_scroll_audit.py",
                                "run_engine_compat_probe.py", "run_guard_selftest.py",
                                "toolkit_plugin_ui.py",
                                # Qt 试点三件（PySide6 通过与否都能静态扫；此前只靠手工跑 pyflakes）
