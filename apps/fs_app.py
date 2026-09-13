@@ -218,12 +218,19 @@ class FSToolApp:
         outer.add(pan, weight=3, minsize=px(160))
         self._build_db_panel(pan)
         self._build_file_panel(pan)
-        # 两个面板的最小高度**由内容自己说**（`min_height()` = 面板里控件的自然高度），
-        # 并封顶在一个"够用就好"的值：于是窗格永远不小于面板的可用最小值 →
-        # 面板**自己的**滚动条（智能隐藏、就在面板底部/右侧）不会被窗格切掉；
-        # 面板比内容小时，由面板内部滚 —— 这正是"有东西显示不完全就出滚动条"。
-        for _p in (self.db_panel, self.file_panel):
-            pan.set_minsize(_p, min(_p.min_height(), px(200)))
+        # 两个面板的最小高度**由内容自己说**（`min_height()` = 面板里控件的自然高度 + 内边距）。
+        # **必须推迟到 after_idle**：构造期读到的请求尺寸还是陈旧的 1（子代理实测：
+        # pan._mins 落值恒为 1，而不是 168/210）—— 布局跑过一轮之后再读才是真实需要。
+        def _apply_panel_minsizes():
+            try:
+                for _p in (self.db_panel, self.file_panel):
+                    pan.set_minsize(_p, min(_p.min_height(), px(200)))
+            except Exception:
+                pass
+        try:
+            self.root.after_idle(_apply_panel_minsizes)
+        except Exception:
+            pass
         self._build_pack_panel(outer)
         # 日志面板由 Hub 统一提供，工具内不再自建
 

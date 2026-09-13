@@ -772,37 +772,62 @@ class ScrollPanel(ttk.LabelFrame):
         """内容变了（加/删控件、改文字）之后调用，让滚动条重新判断要不要出现。"""
         self.view._sync()
 
+    def _pad_hv(self):
+        """把 `padding` 解析成 (水平, 垂直) 两个整数 —— **任何合法写法都要能解析**。
+
+        子代理实测到的问题：`cget("padding")` 可能返回**元组** `(6,)`（ttk 会这样回），
+        原来的 `int(str(...).split()[0])` 对 `"(6,)"` 直接抛异常 → 被 except 吞掉 →
+        **恒返回 0** → 内边距从来没算进 `min_height()/min_width()`（面板最小高度偏小）。
+        """
+        try:
+            raw = self.cget("padding")
+        except Exception:
+            return 0, 0
+        vals = []
+        if isinstance(raw, (tuple, list)):
+            for v in raw:
+                try:
+                    vals.append(int(float(v)))
+                except (TypeError, ValueError):
+                    pass
+        else:
+            toks = str(raw).replace("(", " ").replace(")", " ").replace(",", " ").split()
+            for tok in toks:
+                try:
+                    vals.append(int(float(tok)))
+                except ValueError:
+                    pass
+        if not vals:
+            return 0, 0
+        if len(vals) == 1:
+            return vals[0], vals[0]
+        return vals[0], vals[1]
+
     def min_height(self):
-        """**内容自己说需要多高**（= 面板里所有控件的自然高度之和）。
+        """**内容自己说需要多高**（= 面板里控件的自然高度 + 上下内边距）。
 
         用途：面板当窗格用时，窗格的最小高度直接取这个值 —— 于是"窗格永远不小于面板
         的需要"，面板底部那条横向滚动条不会被窗格切掉。
-        （2026-09-13 实测的正是这件事：面板需要 446、窗格只给 396 → 面板底部被裁，
-         而横向滚动条恰好就在面板底部 → 用户看到"按钮被遮住却没有滚动条"。）
+        **调用时机很重要**：必须等控件都建好、布局跑过一轮之后再调（见 fs_app 里的
+        `after_idle`）——构造期读到的请求尺寸还是陈旧的 1（子代理实测：minsize 落值恒为 1）。
         """
         try:
-            return self.body.winfo_reqheight() + self._pad_y()
+            return self.body.winfo_reqheight() + self._pad_hv()[1] * 2
         except Exception:
             return 0
 
     def min_width(self):
         """内容自己说需要多宽（同上，用于横向）。"""
         try:
-            return self.body.winfo_reqwidth() + self._pad_x()
+            return self.body.winfo_reqwidth() + self._pad_hv()[0] * 2
         except Exception:
             return 0
 
     def _pad_y(self):
-        try:
-            return int(str(self.cget("padding")).split()[-1]) * 2
-        except Exception:
-            return 0
+        return self._pad_hv()[1] * 2
 
     def _pad_x(self):
-        try:
-            return int(str(self.cget("padding")).split()[0]) * 2
-        except Exception:
-            return 0
+        return self._pad_hv()[0] * 2
 
     def recolor(self):
         self.view.recolor()
