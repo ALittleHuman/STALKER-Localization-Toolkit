@@ -853,9 +853,6 @@ class ScrollPanel(ttk.LabelFrame):
     def _pad_y(self):
         return self._pad_hv()[1] * 2
 
-    def _pad_x(self):
-        return self._pad_hv()[0] * 2
-
     def recolor(self):
         self.view.recolor()
 
@@ -1019,13 +1016,6 @@ class ScrollViewport(ttk.Frame):
             if req != getattr(self, "_last_req", None):
                 self._last_req = req
                 self._sync()
-                # 请求尺寸变了 → 通知宿主（ScrollPanel 用它把自身请求高度对齐到内容）
-                hook = getattr(self, "_req_hook", None)
-                if callable(hook):
-                    try:
-                        hook()
-                    except Exception:
-                        pass
             self._watch_after = self.after(250, self._watch_req)
         except Exception:
             self._watch_after = None
