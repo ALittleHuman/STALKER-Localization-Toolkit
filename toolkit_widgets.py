@@ -1039,14 +1039,22 @@ class ScrollViewport(ttk.Frame):
         `stalker_toolkit` 里的 `_wheel_router`）。
         """
         try:
-            if not wheel_claim():
-                return "break"          # 这次滚轮已归别人：自己不动，也别再往外传
             before = self.canvas.yview()
             if before == (0.0, 1.0):
-                return False                      # 装得下
+                return False                      # 装得下 = 这里**没有滚动条**（不算）
             step = -1 if getattr(event, "delta", 0) > 0 else 1
             self.canvas.yview_scroll(step * 3, "units")
-            return self.canvas.yview() != before
+            after = self.canvas.yview()
+            if after == before:
+                return False                      # 已经在头/尾：这一下不算我滚的 → 交给外层
+            if not wheel_claim(event):
+                # 这次滚轮已被别人（更内层）滚过：撤销我这一下，保证"一次只有一个滚动条动"。
+                # ★顺序很重要（用户口径 2026-09-13："隐藏的滚动条，代码里不算滚动条"）：
+                #   声明必须放在**确认能滚之后** —— 我先前的写法让"装得下/已到头"的视口
+                #   也把声明吃掉，于是整页再也滚不动。
+                self.canvas.yview_moveto(before[0])
+                return False
+            return True
         except Exception:
             return False
 
@@ -1242,18 +1250,25 @@ class AutoScrollbar(ttk.Scrollbar):
 
 
 # ── 滚轮独占闸门（用户口径 2026-09-13："一次只有一个滚动条能动"）──────────────
-# 一个滚轮事件只允许**第一个能滚的控件**滚动；同一时刻的其余滚动动作一律不生效。
-# 为什么需要它：滚轮会同时到达"指针下控件的自身绑定"（树的 canvas）与"顶层统一路由"，
-# 两边各自判断、各自滚一次，用户就会看到小滚动条与大滚动条一起动。
-_WHEEL_CLAIM = [0.0]
+# 一个滚轮事件只允许**第一个真能滚的控件**滚动。
+# ★身份用 **`event.time`**（同一次事件的时间戳），不是时间窗口：窗口式判定会把
+#   "快转滚轮时相邻的两个事件"误判成同一次（间隔可能只有 30~50ms），
+#   结果是每两次滚轮才动一次。缺失时间戳时才退回时间窗口兜底。
+_WHEEL_CLAIM = [None]
 
 
-def wheel_claim(win=0.06):
-    """声明这次滚轮由我处理；`win` 秒内已被别人声明过则返回 False（这次不动）。"""
-    now = time.time()
-    if now - _WHEEL_CLAIM[0] < win:
+def wheel_claim(event=None):
+    """声明这次滚轮由我处理；同一次事件（`event.time` 相同）已被别人声明则返回 False。"""
+    stamp = getattr(event, "time", None)
+    if stamp is None:
+        now = time.time()
+        if _WHEEL_CLAIM[0] is not None and (now - _WHEEL_CLAIM[0]) < 0.06:
+            return False
+        _WHEEL_CLAIM[0] = now
+        return True
+    if _WHEEL_CLAIM[0] == stamp:
         return False
-    _WHEEL_CLAIM[0] = now
+    _WHEEL_CLAIM[0] = stamp
     return True
 
 
@@ -1736,16 +1751,21 @@ class CanvasTree:
         原来这里无条件 `return "break"` —— 树滚不动（只有几行/已到底）时也把事件吃掉，
         于是鼠标停在树上时**整页滚不动**。改成只在"yview 真的变了"时 break。
 
-        另加"滚轮独占"（同一天用户："一次只有一个滚动条能动"）：这一次滚轮若已被
-        别的控件（外层视口）声明，树就不动，也不再往外传。
+        另加"滚轮独占"（同一天用户："一次只有一个滚动条能动"）：**只有真的滚动了**才声明
+        独占；没滚动（只有几行/已到底）就既不声明、也不吃事件，交给外层。
+        用户口径 2026-09-13："隐藏的滚动条，代码里不算滚动条。"
         """
-        if not wheel_claim():
-            return "break"
         before = self.canvas.yview()
         self.canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
         after = self.canvas.yview()
         self._draw()
-        return "break" if after != before else None
+        if after == before:
+            return None                      # 没动 → 这里没有可用的滚动条 → 冒泡给外层
+        if not wheel_claim(e):
+            self.canvas.yview_moveto(before[0])   # 这次已被别人滚过 → 撤销
+            self._draw()
+            return "break"
+        return "break"
 
     def get_selected_paths(self):
         return [n.path for n in self._sel if n.path]

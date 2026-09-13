@@ -1055,9 +1055,19 @@ def main():
             cond_break = try_scroll = False
             for node in ast.walk(tree):
                 if isinstance(node, ast.FunctionDef) and node.name == "_on_wheel":
+                    # 判据（2026-09-13 更新，意图不变）：`_on_wheel` 必须**同时**存在
+                    # "吃掉事件"（return "break"）与"放行"（return None）两条出路 ——
+                    # 这才是"只在真的滚动了时才 break"。原来按 `return A if C else B`
+                    # 这种写法找；现在实现改成了 if/else 语句，于是按"两条出路都存在"判。
+                    breaks = nones = 0
                     for n in ast.walk(node):
-                        if isinstance(n, ast.Return) and isinstance(n.value, ast.IfExp):
-                            cond_break = True
+                        if isinstance(n, ast.Return):
+                            v = n.value
+                            if isinstance(v, ast.Constant) and v.value == "break":
+                                breaks += 1
+                            elif v is None or (isinstance(v, ast.Constant) and v.value is None):
+                                nones += 1
+                    cond_break = breaks >= 1 and nones >= 1
                 if isinstance(node, ast.FunctionDef) and node.name == "try_scroll":
                     try_scroll = True
             hub = io.open(os.path.join(BASE, "stalker_toolkit.py"), encoding="utf-8").read()
