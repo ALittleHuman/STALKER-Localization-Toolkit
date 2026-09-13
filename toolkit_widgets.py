@@ -766,7 +766,11 @@ class ScrollPanel(ttk.LabelFrame):
 
     def __init__(self, parent, title="", padding=6, **kw):
         super().__init__(parent, text=title, padding=padding, **kw)
-        self.view = ScrollViewport(self, horizontal=True)
+        # **必须 fit="content"**：默认的 "viewport" 会把内容高度强行压成视口高度，
+        # 于是"内容比视口高"这件事永远不成立 —— 纵向滚动条一辈子不出现，
+        # 被裁掉的内容谁也够不着（这就是"实现了没"那一问的答案：没实现）。
+        # fit="content" 让内容保持自己的自然高度（req），装不下时 vbar 才真的出现。
+        self.view = ScrollViewport(self, horizontal=True, fit="content")
         self.view.pack(fill="both", expand=True)
         self.body = self.view.content          # 调用方往这里建控件
 
