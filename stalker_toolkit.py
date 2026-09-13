@@ -421,36 +421,19 @@ if __name__ == "__main__":
         paint_now(root)
         # 首个栏目同步装，其余分帧（见 build_tabs）：mainloop 因此早约 1.2 s 跑起来，
         # 窗口不再是"画出来了但点不动"。
-        # ── 启动期把窗口**藏起来装**，装完再露出来 ─────────────────────────
-        # 用户口径 2026-09-13："转圈的动画为什么不是拿来隐藏逐个加载控件的过程，
-        # 而是让工具看起来更卡。" —— 一针见血：栏目是分帧装的（每帧一个），装配会
-        # 卡住事件循环 → 转圈**冻在原处不动**，而窗口已经露在外面、用户同时看着
-        # "半个界面 + 一个不动的圈" → 观感就是"更卡"。
-        # 正解不是让圈转得更顺，而是**根本别让用户看到装配过程**：
-        #   * 装配期间 `withdraw()`（窗口不显示），装完在 on_done 里 `deiconify()`；
-        #   * 遮罩保留（它挡住"露出来那一瞬间"仍可能未画完的控件），但用户几乎看不到它。
-        # 兜底：看门狗那 20 s 之外再加一条"装配失败也必须露出来"，绝不会把窗口留在隐藏态。
-        was_visible = bool(root.winfo_viewable())
-        hidden_for_boot = False
-        if was_visible and len(TOOLS) > 1:      # 有分帧装配才需要藏（否则装完即显示）
-            try:
-                root.withdraw()
-                hidden_for_boot = True
-            except Exception:
-                hidden_for_boot = False
-
+        # ── 启动：窗口照常显示，**遮罩盖住栏目区**（不要把窗口藏起来）──────────
+        # 上一版我在装配期 `withdraw()` 了整个窗口 —— 用户反馈："而且现在没有转圈环节。"
+        # 藏过头了：装配那一两秒里**什么都看不到**（不是没转圈，是整窗都不在）。
+        # 正解：窗口照常出现 + 转圈遮罩盖在**栏目区**上（日志栏不盖，它此刻已经可用），
+        # 装完由 on_done 摘掉遮罩。装配分帧进行，所以遮罩期间圈是能动的。
         def _reveal():
             busy.stop()
-            if hidden_for_boot:
-                try:
-                    root.deiconify()
-                    root.lift()
-                except Exception:
-                    pass
+            try:
+                root.lift()
+            except Exception:
+                pass
 
         sync_done, rest = rebuild(nb, apps, on_done_extra=_reveal)
-        if hidden_for_boot and not rest:
-            _reveal()
         log_detail("首个栏目已就绪（%s），其余 %d 个分帧装配"
                    % ("、".join(sync_done), rest))
 

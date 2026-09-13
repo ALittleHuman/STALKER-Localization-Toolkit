@@ -758,6 +758,26 @@ class ScrollPanel(ttk.LabelFrame):
         ttk.Button(panel.body, text="全选").pack(side="left")
     """
 
+    def _fit_request(self):
+        """把**面板的请求高度**对齐到内容高度（**一次性**调用，见 __init__ 的 after）。
+
+        为什么需要（2026-09-13 实机截图"源文件夹 / 单个文件"面板空一大块）：
+        实测 `面板高=303 / 内容需要=43 / canvas 请求高=264` —— 视口里的 `tk.Canvas`
+        不给 height 时默认请求高度是 264~276px，而 canvas 里的窗口项**不计入** canvas
+        的请求尺寸 → 面板在页面里 `pack(fill="x")` 就被撑到 300+，里面大半是空的。
+        面板当**窗格**用时，窗格分配的高度会覆盖请求值，不受影响。
+
+        为什么是"一次性"而不是放进 `_watch_req` 周期看门：我第一版那样接，
+        形成"改高度 → `<Configure>` → 重算 → 再改高度"的循环，验证脚本卡死 10 分钟。
+        一次性 + 幂等（值没变就不动）才是安全写法。
+        """
+        try:
+            want = max(1, self.body.winfo_reqheight())
+            if int(float(self.view.canvas.cget("height"))) != want:
+                self.view.canvas.configure(height=want)
+        except Exception:
+            pass
+
     def __init__(self, parent, title="", padding=6, **kw):
         super().__init__(parent, text=title, padding=padding, **kw)
         # **必须 fit="content"**：默认的 "viewport" 会把内容高度强行压成视口高度，
@@ -767,6 +787,13 @@ class ScrollPanel(ttk.LabelFrame):
         self.view = ScrollViewport(self, horizontal=True, fit="content")
         self.view.pack(fill="both", expand=True)
         self.body = self.view.content          # 调用方往这里建控件
+        # 内容建完之后（页面构建阶段结束）**一次性**把请求高度对齐到内容，
+        # 否则 canvas 默认请求高 264~276px 会把面板撑出一大块空白。
+        # 已经实测过：把它放进 `_watch_req` 周期看门会造成事件死循环（脚本卡死）。
+        try:
+            self.after(600, self._fit_request)
+        except Exception:
+            pass
 
     def refresh(self):
         """内容变了（加/删控件、改文字）之后调用，让滚动条重新判断要不要出现。"""
@@ -992,6 +1019,13 @@ class ScrollViewport(ttk.Frame):
             if req != getattr(self, "_last_req", None):
                 self._last_req = req
                 self._sync()
+                # 请求尺寸变了 → 通知宿主（ScrollPanel 用它把自身请求高度对齐到内容）
+                hook = getattr(self, "_req_hook", None)
+                if callable(hook):
+                    try:
+                        hook()
+                    except Exception:
+                        pass
             self._watch_after = self.after(250, self._watch_req)
         except Exception:
             self._watch_after = None
