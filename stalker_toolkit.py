@@ -27,7 +27,7 @@ if _BASE_DIR not in sys.path:
 from toolkit_version import full_version
 
 from toolkit import (
-    APP_NAME, BusyOverlay, HIDPI_STATUS, LogBox, PluginManager, SplitPane, ScrollViewport, T, _BaseTk, _make_pump,
+    APP_NAME, HIDPI_STATUS, LogBox, PluginManager, SplitPane, ScrollViewport, T, _BaseTk, _make_pump,
     app_dir, apply_theme, apply_tk_defaults, apply_titlebar, color,
     ensure_package, load_user_theme, log_detail, log_path, log_summary,
     log_write_failed, install_tab_focus_reset,
@@ -220,15 +220,13 @@ if __name__ == "__main__":
         name = tool.get("name") or tool.get("info", {}).get("name", "插件")
         TOOLS.append((name, tool.get("builder")))
 
-    def rebuild(nb, apps, defer_rest=True, on_done_extra=None):
+    def rebuild(nb, apps, defer_rest=True):
         """装配全部栏目（调度见 build_tabs）。
 
         `defer_rest=True` 是**启动路径**：只同步装第一个栏目，其余分帧，好让
         mainloop 尽早跑起来；切主题 / 将来重建界面用 `defer_rest=False`（一次性
         装完，与旧实现一致）。注意 `apply_theme()` 由 on_done 在**全部装完后**
         调用一次 —— 它要配约 100 条 ttk 样式，绝不能进装配循环。
-
-        `on_done_extra` 是**全部装完后**额外要做的事（启动路径用它摘掉加载遮罩）。
         """
         for tab in nb.tabs():
             nb.forget(tab)
@@ -260,11 +258,6 @@ if __name__ == "__main__":
 
         def _done():
             apply_theme()                 # 全部装完后才配 ttk 样式（绝不进装配循环）
-            if on_done_extra is not None:
-                try:
-                    on_done_extra()
-                except Exception as e:
-                    log_detail("装配收尾失败: %s" % e, "warn")
 
         return build_tabs(root, TOOLS, _build_one, defer_rest=defer_rest,
                           on_done=_done)
@@ -411,29 +404,14 @@ if __name__ == "__main__":
         # 日志栏此刻已经接通，所以这一句用户看得见（装配过程有反馈，不是干等）。
         log_summary("正在装配内置栏目…")
 
-        # ── 加载遮罩（用户口径 2026-09-13）────────────────────────────────
-        # "整个窗口在没有完全加载的时候显示加载转圈，直接看着控件一个个跳出来太难看了。"
-        # 盖在**栏目区**上（日志栏不盖：它此刻已经能用，用户能看到"正在装配"那几行）。
-        # 装配全部结束由 on_done_extra 摘掉；遮罩自己还有 20 s 看门狗兜底。
-        busy = BusyOverlay(nb_box, text="正在加载组件…")
-        busy.start()
+        # 转圈遮罩已按用户要求删除（2026-09-13："这个转圈是没用的，算了，删了吧。"）。
+        # 启动仍走分帧装配（让 mainloop 尽早跑起来），装完由 on_done 收尾即可 ——
+        # 不再有任何遮罩/动画，也不再有"藏窗口"那套。
+        #
+        # 外壳先画一帧再装配（用户口径 2026-09-12"优化很差"的一半）：窗口不再是
+        # "画出来了但点不动"，首个栏目同步装、其余分帧（见 build_tabs）。
         paint_now(root)
-        paint_now(root)
-        # 首个栏目同步装，其余分帧（见 build_tabs）：mainloop 因此早约 1.2 s 跑起来，
-        # 窗口不再是"画出来了但点不动"。
-        # ── 启动：窗口照常显示，**遮罩盖住栏目区**（不要把窗口藏起来）──────────
-        # 上一版我在装配期 `withdraw()` 了整个窗口 —— 用户反馈："而且现在没有转圈环节。"
-        # 藏过头了：装配那一两秒里**什么都看不到**（不是没转圈，是整窗都不在）。
-        # 正解：窗口照常出现 + 转圈遮罩盖在**栏目区**上（日志栏不盖，它此刻已经可用），
-        # 装完由 on_done 摘掉遮罩。装配分帧进行，所以遮罩期间圈是能动的。
-        def _reveal():
-            busy.stop()
-            try:
-                root.lift()
-            except Exception:
-                pass
-
-        sync_done, rest = rebuild(nb, apps, on_done_extra=_reveal)
+        sync_done, rest = rebuild(nb, apps)
         log_detail("首个栏目已就绪（%s），其余 %d 个分帧装配"
                    % ("、".join(sync_done), rest))
 

@@ -817,131 +817,6 @@ def main():
         check("拉回来即恢复：超过原最小值后最小值装回去、且该栏真的变大",
               lambda: _cl["min_back"] == 110 and _cl["restored_h"] > 60)
 
-        # ── 加载遮罩：启动装配期间盖住"控件一个个跳出来" ──────────────────
-        print("\n[7b] 加载遮罩（BusyOverlay：转圈 + 看门狗 + 幂等收掉）")
-        import toolkit_widgets as _tw9
-        import toolkit as _tk9
-
-        def _busy_checks():
-            import tkinter as _tk
-            top = _tk.Toplevel(root)
-            top.geometry("420x300+2000+2000")
-            try:
-                host = _tk.Frame(top, bg="#222222")
-                host.pack(fill="both", expand=True)
-                b = _tw9.BusyOverlay(host, text="正在加载组件…")
-                shown_before = bool(b.winfo_manager())
-                b.start()
-                top.update()
-                covered = (b.winfo_manager() == "place"
-                           and b.winfo_width() >= host.winfo_width() - 2
-                           and b.winfo_height() >= host.winfo_height() - 2)
-                a0 = b.angle()
-                time.sleep(0.25)          # 让它真的转几帧
-                top.update()
-                a1 = b.angle()
-                running = b.running()
-                b.stop()
-                top.update()
-                hidden = not b.winfo_manager()
-                still = b.running()
-                b.stop()                  # 幂等
-                ok_idem = not b.winfo_manager()
-                watchdog = getattr(_tw9.BusyOverlay, "MAX_MS", 0)
-                exported = hasattr(_tk9, "BusyOverlay")
-            finally:
-                try:
-                    top.destroy()
-                except Exception:
-                    pass
-            return {"shown_before": shown_before, "covered": covered, "a0": a0, "a1": a1,
-                    "running": running, "hidden": hidden, "still": still,
-                    "ok_idem": ok_idem, "watchdog": watchdog, "exported": exported}
-
-        _bz = _busy_checks()
-        print("        实测：%r" % (_bz,))
-        check("BusyOverlay：start() 后**铺满**父容器（盖住逐个跳出来的控件）",
-              lambda: _bz["covered"] and not _bz["shown_before"])
-        check("BusyOverlay：真的在转（两帧之间角度变了）且动画在跑",
-              lambda: _bz["a1"] != _bz["a0"] and _bz["running"])
-        check("BusyOverlay：stop() 收掉遮罩并取消动画（不留孤儿定时器）",
-              lambda: _bz["hidden"] and not _bz["still"])
-        check("BusyOverlay：stop() 幂等（重复调用不炸、状态一致）", lambda: _bz["ok_idem"])
-        check("BusyOverlay：有看门狗（on_done 万一没来也不会永远盖着）且已导出",
-              lambda: _bz["watchdog"] >= 5000 and _bz["exported"])
-
-        def _busy_wired():
-            """AST：Hub 必须建遮罩，并把 stop 交给装配的 on_done 收尾。"""
-            import ast
-            import io as _io          # 本段跑在 [8] 之前，那里才 import io
-            src = _io.open(os.path.join(BASE, "stalker_toolkit.py"), encoding="utf-8").read()
-            tree = ast.parse(src)
-            built = done_hook = False
-            for node in ast.walk(tree):
-                if not (isinstance(node, ast.FunctionDef) and node.name == "build_hub"):
-                    continue
-                for n in ast.walk(node):
-                    if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "BusyOverlay":
-                        built = True
-                    for kw in getattr(n, "keywords", []):
-                        if kw.arg == "on_done_extra":
-                            done_hook = True
-            return built and done_hook
-        check("AST：Hub 建了加载遮罩，且把收尾（stop）挂进装配 on_done", _busy_wired)
-
-        # ── [10] 真启动一次程序（补上"CI 全绿但程序起不来"的缺口）──────────────
-        # 2026-09-13 实况：`ScrollViewport(..., min_y=...)` 参数名写错（应为 minsize_y）
-        # → 启动即 TclError: unknown option "-min_y"，**程序根本起不来**；
-        # 而当时 ext/app/functional/build/hub/qt 全部 PASS —— 因为没有任何一条探针
-        # 真的把程序跑起来过。这一节就干这件事：**起一个真进程、看它能不能活过启动期**。
-        # 代价：跑闸门时会有一个窗口闪一下（8 秒内自动关掉）。
-        print("\n[10] 真启动一次程序（子进程，检查能否活过启动期）")
-        import subprocess as _sp_boot
-        import sys as _sys
-
-        def _app_boots():
-            import io as _io2          # 本节跑在 [8] 之前，那里才 import io
-            import tempfile
-            out_p = os.path.join(tempfile.gettempdir(), "dsh_boot_probe_out.txt")
-            err_p = os.path.join(tempfile.gettempdir(), "dsh_boot_probe_err.txt")
-            env = dict(os.environ)
-            env["PYTHONIOENCODING"] = "utf-8"
-            alive = False
-            err_text = ""
-            with _io2.open(out_p, "w", encoding="utf-8") as fo, \
-                    _io2.open(err_p, "w", encoding="utf-8") as fe:
-                proc = _sp_boot.Popen([_sys.executable, "stalker_toolkit.py"], cwd=BASE,
-                                 stdout=fo, stderr=fe, env=env)
-                try:
-                    t0 = time.time()
-                    while time.time() - t0 < 8.0:
-                        if proc.poll() is not None:
-                            break
-                        time.sleep(0.2)
-                    alive = proc.poll() is None
-                finally:
-                    if proc.poll() is None:
-                        try:
-                            proc.terminate()
-                            proc.wait(timeout=10)
-                        except Exception:
-                            try:
-                                proc.kill()
-                            except Exception:
-                                pass
-            try:
-                err_text = _io2.open(err_p, encoding="utf-8", errors="replace").read()[-1500:]
-            except Exception:
-                pass
-            return {"alive": alive, "err": err_text}
-
-        _boot = _app_boots()
-        print("        实测：alive=%s%s" % (_boot["alive"],
-              ("  尾部错误=" + _boot["err"][-300:]) if _boot["err"] else ""))
-        check("★真启动：程序能活过启动期（起不来会在这里红，而不是只在用户机器上炸）",
-              lambda: _boot["alive"])
-        check("★真启动：启动期没有异常回溯（stderr 无 Traceback）",
-              lambda: "Traceback" not in _boot["err"])
         def _hub_layout_wiring():
             """AST：栏目页**必须**向上传递高度；两栏都要有 minsize。
 
@@ -1258,6 +1133,7 @@ def main():
             把面板压到 220px → 按钮行显示不完全 → **必须出现**横向滚动条。
             """
             import tkinter as _tk
+            import toolkit_widgets as _tw9      # 本节自己用（原先借的是加载遮罩那段的导入）
             top = _tk.Toplevel(root)
             top.geometry("700x300+2000+2000")
             try:
@@ -1305,7 +1181,7 @@ def main():
               lambda: _sp["narrow_real"] and _sp["narrow_spans"],
               "滚动条真几何=%r" % (_sp["narrow_geo"],))
         check("ScrollPanel：是 LabelFrame 的子类（六页按同一 API 调用）",
-              lambda: issubclass(_tw9.ScrollPanel, ttk.LabelFrame))
+              lambda: issubclass(_tw.ScrollPanel, ttk.LabelFrame))
         def _hub_window_scroll_wiring():
             """AST：**标签条钉住、滚动发生在页面内部**（2026-09-13 实机录屏后的结构定稿）。
 

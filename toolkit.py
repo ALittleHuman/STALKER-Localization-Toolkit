@@ -58,7 +58,7 @@ from toolkit_theme import (
 from toolkit_widgets import (
     refresh_theme, path_row, _make_pump,
     dir_row, count_label, tool_text, tool_header, vscrollbar, AutoScrollbar,
-    BusyOverlay, drop_zone,
+    drop_zone,
     LogBox, log_section, CanvasTree, SplitPane, ScrollViewport, ScrollPanel,
     neutralize_input_focus, install_blank_click_unfocus, install_tab_focus_reset,
     plugin_slot_bar, attach_plugin_context_menu, invoke_plugin_callback,
@@ -129,7 +129,7 @@ __all__ = [
     "_hex_to_colorref", "apply_titlebar", "_BG_ROLES", "_role_of", "ui_scale",
     "set_ui_scale", "px", "sync_tk_scaling", "refresh_theme", "path_row",
     "_make_pump", "dir_row", "count_label", "tool_text", "tool_header",
-    "vscrollbar", "AutoScrollbar", "ScrollViewport", "ScrollPanel", "BusyOverlay", "drop_zone", "LogBox", "log_section", "CanvasTree",
+    "vscrollbar", "AutoScrollbar", "ScrollViewport", "ScrollPanel", "drop_zone", "LogBox", "log_section", "CanvasTree",
     "SplitPane", "plugin_slot_bar", "attach_plugin_context_menu",
     "neutralize_input_focus", "install_blank_click_unfocus", "install_tab_focus_reset",
     "invoke_plugin_callback", "PluginSlot", "tool_dropdown",
