@@ -286,28 +286,32 @@ if __name__ == "__main__":
         # 装不下由**它自己**的滚动条解决），日志栏回到普通窗格、由它自己的滚动条管。
         # 两个 minsize 用同一组变量：否则"栏目的下限"与"日志的下限"会各说各话。
         min_top, min_log = px(260), px(110)
-        # 栏目内容的**最小高度**（"页面至少需要多高才可用"）。为什么需要它：
-        # 栏目页都关了 pack_propagate，所以 Notebook 的请求高度是 1 —— 单靠请求高度
-        # 没人知道页面需要多高，窗口一矮就只能在页面**内部**硬挤（实测"封包"被挤到 10px）。
-        # 给视口一个下限之后：窗口够高 → 内容随视口铺满；窗口不够 → 内容保持这个下限、
-        # 由栏目区**自己的滚动条**解决（日志栏不受影响，用户口径 2026-09-13）。
+        # 栏目内容的**最小高度**（"页面至少需要多高才可用"）：窗口够高 → 内容随视口铺满；
+        # 窗口不够 → 内容保持这个下限，由栏目区**自己的滚动条**解决（日志栏不受影响）。
         PAGE_MIN_H = px(430)
         nb_paned = SplitPane(root, orient="vertical")
         nb_paned.pack(fill="both", expand=True, padx=14, pady=(2, 6))
         nb_box = nb_paned.add_clipped(weight=3, minsize=min_top, fit="content")
+        # 取视口必须用 `_panes()`（真控件）：`ttk.Panedwindow.panes()` 返回的是 Tcl 路径
+        # **字符串** —— 对它取 `.scroll_wheel` 会抛 AttributeError，被 except 吞掉后
+        # **滚轮绑定根本没装上**（用户实测 2026-09-13："没法滚轮滚动，只能把鼠标移上去
+        # 才能滚动"）。这个坑 `SplitPane._panes()` 的 docstring 里早就写着，我还是踩了。
         try:
-            nb_paned.panes()[0]._min_y = PAGE_MIN_H      # 视口下限 = 页面最小高度
-            nb_paned.panes()[0]._sync()
-        except Exception:
-            pass
+            nb_view = nb_paned._panes()[0]
+        except Exception as e:
+            nb_view = None
+            log_summary(f"栏目区视口取不到：{e}", "warn")
+        if nb_view is not None:
+            nb_view._min_y = PAGE_MIN_H          # 视口下限 = 页面最小高度
+            nb_view._sync()
+            # 滚轮绑在**窗口**上，只滚栏目区那个视口：内层自己能滚的控件（日志/树/文本框）
+            # 会自己消费并 break，事件到不了这里 —— "在树里滚树、在别处滚整页"。
+            try:
+                root.bind("<MouseWheel>", nb_view.scroll_wheel, add="+")
+            except Exception as e:
+                log_summary(f"栏目区滚轮绑定失败：{e}", "warn")
         nb = ttk.Notebook(nb_box)
         nb.pack(fill="both", expand=True)
-        # 滚轮绑在**窗口**上，但只滚栏目区那个视口：内层可滚控件（日志/树）自己消费时会 break，
-        # 事件到不了这里 —— "在日志里滚日志、在栏目区滚页面"两不冲突。
-        try:
-            root.bind("<MouseWheel>", nb_paned.panes()[0].scroll_wheel, add="+")
-        except Exception:
-            pass
         log_lf = ttk.LabelFrame(nb_paned, text="日志", padding=4)
         nb_paned.add(log_lf, weight=1, minsize=min_log)
         log_bar = ttk.Frame(log_lf); log_bar.pack(fill="x", pady=(0, 2))

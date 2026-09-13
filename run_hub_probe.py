@@ -1122,9 +1122,14 @@ def main():
             assert found["clipped_content"], \
                 "栏目区 pane 必须 add_clipped(fit='content')（自己保持高度、自己滚）"
             assert found["wheel"], "滚轮没绑到窗口（栏目区滚不动）"
+            # ★ 绑定目标必须是**真控件**：`panes()` 返回 Tcl 路径字符串，取 `.scroll_wheel`
+            # 会抛 AttributeError、被 except 吞掉 → 绑定根本没装上（用户实测："没法滚轮滚动"）。
+            # 这里按源码锁住"用 _panes() 取视口"。
+            src_ok = "_panes()" in src
+            assert src_ok, "取 pane/视口必须用 _panes()（真控件），不能用 panes()（Tcl 字符串）"
             return True
-        check("AST：栏目区自己滚（add_clipped fit=content）+ 日志不被窗口级滚动条管 + 窗口绑滚轮",
-              _hub_window_scroll_wiring)
+        check("AST：栏目区自己滚（add_clipped fit=content）+ 日志不被窗口级滚动条管 + "
+              "窗口绑滚轮（且用 _panes() 取真控件）", _hub_window_scroll_wiring)
 
 
         # ── 裁剪式窗格：拖分隔条时远侧边框不动、内容左对齐、装不下出横向滚动条 ──
