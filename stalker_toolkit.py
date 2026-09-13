@@ -27,7 +27,7 @@ if _BASE_DIR not in sys.path:
 from toolkit_version import full_version
 
 from toolkit import (
-    APP_NAME, BusyOverlay, HIDPI_STATUS, LogBox, PluginManager, SplitPane, T, _BaseTk, _make_pump,
+    APP_NAME, BusyOverlay, HIDPI_STATUS, LogBox, PluginManager, SplitPane, ScrollViewport, T, _BaseTk, _make_pump,
     app_dir, apply_theme, apply_tk_defaults, apply_titlebar, color,
     ensure_package, load_user_theme, log_detail, log_path, log_summary,
     log_write_failed, install_tab_focus_reset,
@@ -99,6 +99,16 @@ def paint_startup(root, hint_text="正在装载组件…"):
     hint.pack(expand=True)
     paint_now(root)
     return hint
+
+
+def page_min_h():
+    """栏目页内容的最小高度（"页面至少需要多高才可用"），按**当前缩放**换算。
+
+    为什么是函数而不是常量：`rebuild` 与 `build_hub` 是同级的，页面装配发生在
+    `rebuild` 里，取不到 `build_hub` 的局部量；而且 `px()` 依赖 Tk 缩放已就绪 ——
+    常量在导入期算会得到 100% 的值（150% 屏上偏小）。运行时算才正确。
+    """
+    return px(430)
 
 
 def build_tabs(root, tools, build_one, defer_rest=True, on_done=None):
@@ -226,19 +236,22 @@ if __name__ == "__main__":
 
         def _build_one(label, factory):
             tab = tk.Frame(nb, bg=color("bg"))
-            # **不再关 pack_propagate**（2026-09-13 反转，用户："这些地方应该出现滚动条"）。
-            # 原来关掉是因为：页面请求高度合计 900+，会把 Notebook 顶高、把日志栏压成 1px。
-            # 现在栏目区 pane 已经是**自己会滚的裁剪视口**（fit="content"），顶高不再伤日志栏：
-            # 页面说出自己需要多高 → 视口据此决定"要不要出纵向滚动条"。
-            # 反过来，关掉 propagate 时页面请求高度是 **1px**，视口就以为"内容装得下" ——
-            # 于是页面被裁掉一截却**连一条滚动条都没有**（用户实机截图圈出的右侧空条）。
             nb.add(tab, text=label)
+            # **滚动发生在页面内部，标签条钉住不动**（2026-09-13 实机录屏抓到的结构错误）：
+            # 原来把整个 Notebook（含标签条）塞进一个滚动视口 —— 页面一滚，**标签条也被滚走**，
+            # 主导航消失。现在改成：标签条属于 Notebook（固定），每个栏目页自己是一个
+            # 内容视口（fit="content" + page_min_h() 下限）——
+            #   窗口够高 → 页面铺满；不够高 → 页面**内部**滚动，标签条照旧在顶上。
+            # 页面的请求高度仍然很小（视口撑着），所以不会把日志栏挤掉（那条老问题不复发）。
+            page_view = ScrollViewport(tab, fit="content", min_y=page_min_h())
+            page_view.pack(fill="both", expand=True)
             try:
-                apps[label] = factory(tab)
+                apps[label] = factory(page_view.content)
                 log_detail(f"组件已加载: {label}")
             except Exception as e:
                 log_summary(f"组件加载失败: {label} — {e}", "err")
-                ttk.Label(tab, text=f"加载失败: {e}", style="Red.TLabel").pack(pady=30)
+                ttk.Label(page_view.content, text=f"加载失败: {e}",
+                          style="Red.TLabel").pack(pady=30)
             # 每装完一个栏目就画一帧（同步路径与分帧路径都经过这里）。
             paint_now(root)
 
@@ -288,28 +301,13 @@ if __name__ == "__main__":
         min_top, min_log = px(260), px(110)
         # 栏目内容的**最小高度**（"页面至少需要多高才可用"）：窗口够高 → 内容随视口铺满；
         # 窗口不够 → 内容保持这个下限，由栏目区**自己的滚动条**解决（日志栏不受影响）。
-        PAGE_MIN_H = px(430)
         nb_paned = SplitPane(root, orient="vertical")
         nb_paned.pack(fill="both", expand=True, padx=14, pady=(2, 6))
-        nb_box = nb_paned.add_clipped(weight=3, minsize=min_top, fit="content")
-        # 取视口必须用 `_panes()`（真控件）：`ttk.Panedwindow.panes()` 返回的是 Tcl 路径
-        # **字符串** —— 对它取 `.scroll_wheel` 会抛 AttributeError，被 except 吞掉后
-        # **滚轮绑定根本没装上**（用户实测 2026-09-13："没法滚轮滚动，只能把鼠标移上去
-        # 才能滚动"）。这个坑 `SplitPane._panes()` 的 docstring 里早就写着，我还是踩了。
-        try:
-            nb_view = nb_paned._panes()[0]
-        except Exception as e:
-            nb_view = None
-            log_summary(f"栏目区视口取不到：{e}", "warn")
-        if nb_view is not None:
-            nb_view._min_y = PAGE_MIN_H          # 视口下限 = 页面最小高度
-            nb_view._sync()
-            # 滚轮绑在**窗口**上，只滚栏目区那个视口：内层自己能滚的控件（日志/树/文本框）
-            # 会自己消费并 break，事件到不了这里 —— "在树里滚树、在别处滚整页"。
-            try:
-                root.bind("<MouseWheel>", nb_view.scroll_wheel, add="+")
-            except Exception as e:
-                log_summary(f"栏目区滚轮绑定失败：{e}", "warn")
+        # Notebook 直接进窗格（**不**再套滚动视口）：标签条必须钉住 ——
+        # 页面自己的滚动在页内视口里做（见 `_build_one`）。
+        nb_holder = ttk.Frame(nb_paned)
+        nb_paned.add(nb_holder, weight=3, minsize=min_top)
+        nb_box = nb_holder
         # ── 统一滚轮路由（用户口径 2026-09-13："窗口内还是不能滚轮操控"）────────
         # Tk 只把滚轮送到"指针下那个控件"的 bindtags（控件 → 类 → 顶层 → all）；
         # 面板/页面内部的视口 canvas **不在**那条链上，所以给"顶层绑一个处理器"这种

@@ -1166,46 +1166,52 @@ def main():
         check("ScrollPanel：是 LabelFrame 的子类（六页按同一 API 调用）",
               lambda: issubclass(_tw9.ScrollPanel, ttk.LabelFrame))
         def _hub_window_scroll_wiring():
-            """AST：栏目区必须**自己滚**，且**不得**把日志栏塞进窗口级滚动条（用户口径）。
+            """AST：**标签条钉住、滚动发生在页面内部**（2026-09-13 实机录屏后的结构定稿）。
 
-            2026-09-13 用户否决了上一版设计（"日志是不归主窗口滚动条管的"）：
-              ① `build_hub` 里**没有** `ScrollViewport(...)` 直接包两栏（窗口级滚动条不许再管日志）；
-              ② 栏目区 pane 走 `add_clipped(..., fit="content")`（内容保持自身高度、自己滚）；
-              ③ 窗口绑了 `<MouseWheel>`（滚的是栏目区那个视口）。
+            录屏抓到的错误结构：整个 Notebook（**含标签条**）被塞进一个滚动视口 ——
+            页面一滚，主导航（文件系统/编码转换/…）也被滚走（用户截到的那一帧里标签条没了）。
+            定稿结构：
+              ① `build_hub` 里**没有** `ScrollViewport` 包住 Notebook（标签条不许被滚走）；
+                 也**没有**窗口级视口包两栏（日志栏不归主窗口滚动条管，用户早先已否决）；
+              ② 每个栏目页自己是一个 `ScrollViewport(fit="content", min_y=page_min_h())`
+                 （见 `rebuild._build_one`）—— 页面内部滚，标签条不动；
+              ③ 滚轮走**统一路由**（绑在窗口上，从指针下的控件沿 master 链找第一个能滚的视口）。
             """
             import ast
             src = io.open(os.path.join(BASE, "stalker_toolkit.py"), encoding="utf-8").read()
             tree = ast.parse(src)
-            found = {"window_viewport": False, "clipped_content": False, "wheel": False}
+            found = {"hub_viewport": False, "page_viewport": False, "wheel": False,
+                     "clip_pane": False}
             for node in ast.walk(tree):
-                if not (isinstance(node, ast.FunctionDef) and node.name == "build_hub"):
-                    continue
-                for n in ast.walk(node):
-                    if not isinstance(n, ast.Call):
-                        continue
-                    fname = getattr(n.func, "id", None) or getattr(n.func, "attr", None)
-                    if fname == "ScrollViewport":
-                        found["window_viewport"] = True
-                    if fname == "add_clipped":
-                        for kw in n.keywords:
-                            if kw.arg == "fit" and getattr(kw.value, "value", "") == "content":
-                                found["clipped_content"] = True
-                    if (fname == "bind" and n.args
-                            and getattr(n.args[0], "value", "") == "<MouseWheel>"):
-                        found["wheel"] = True
-            assert not found["window_viewport"], \
-                "build_hub 又用 ScrollViewport 包了两栏：日志栏会被主窗口滚动条带走（用户已否决）"
-            assert found["clipped_content"], \
-                "栏目区 pane 必须 add_clipped(fit='content')（自己保持高度、自己滚）"
-            assert found["wheel"], "滚轮没绑到窗口（栏目区滚不动）"
-            # ★ 绑定目标必须是**真控件**：`panes()` 返回 Tcl 路径字符串，取 `.scroll_wheel`
-            # 会抛 AttributeError、被 except 吞掉 → 绑定根本没装上（用户实测："没法滚轮滚动"）。
-            # 这里按源码锁住"用 _panes() 取视口"。
-            src_ok = "_panes()" in src
-            assert src_ok, "取 pane/视口必须用 _panes()（真控件），不能用 panes()（Tcl 字符串）"
+                if isinstance(node, ast.FunctionDef) and node.name == "build_hub":
+                    for n in ast.walk(node):
+                        if not isinstance(n, ast.Call):
+                            continue
+                        fname = getattr(n.func, "id", None) or getattr(n.func, "attr", None)
+                        if fname == "ScrollViewport":
+                            found["hub_viewport"] = True
+                        if fname == "add_clipped":
+                            found["clip_pane"] = True
+                        if (fname == "bind" and n.args
+                                and getattr(n.args[0], "value", "") == "<MouseWheel>"):
+                            found["wheel"] = True
+                if isinstance(node, ast.FunctionDef) and node.name == "_build_one":
+                    for n in ast.walk(node):
+                        if (isinstance(n, ast.Call)
+                                and getattr(n.func, "id", None) == "ScrollViewport"):
+                            for kw in n.keywords:
+                                if kw.arg == "fit" and getattr(kw.value, "value", "") == "content":
+                                    found["page_viewport"] = True
+            assert not found["hub_viewport"], \
+                "build_hub 又用 ScrollViewport 包住了 Notebook/两栏：标签条会被滚走（录屏实证）"
+            assert not found["clip_pane"], \
+                "栏目区不该再走 add_clipped（滚动移到页面内部了）"
+            assert found["page_viewport"], \
+                "每个栏目页必须自己套 ScrollViewport(fit='content') —— 页面内部滚、标签条钉住"
+            assert found["wheel"], "滚轮没绑到窗口（页面/面板滚不动）"
             return True
-        check("AST：栏目区自己滚（add_clipped fit=content）+ 日志不被窗口级滚动条管 + "
-              "窗口绑滚轮（且用 _panes() 取真控件）", _hub_window_scroll_wiring)
+        check("AST：标签条钉住 + 页面内部自己滚（ScrollViewport fit=content）+ 窗口绑滚轮路由",
+              _hub_window_scroll_wiring)
 
 
         # ── 裁剪式窗格：拖分隔条时远侧边框不动、内容左对齐、装不下出横向滚动条 ──
