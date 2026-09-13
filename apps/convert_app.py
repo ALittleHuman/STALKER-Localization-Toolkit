@@ -9,7 +9,7 @@ from toolkit import (
     DND_FILES, errbox, log_summary, log_detail,
     plugin_slot_bar, plugin_entries, HOST_CONVERT, AREA_SOURCE_ENC,
     open_in_explorer, BACKUP_DIRNAME, BACKUP_SUFFIX, ENCODING_CHOICES,
-    color, tool_label,
+    color, tool_label, ScrollPanel,
 )
 
 # ═══ 自动检测：判定链只有一份实现（toolkit_textio.sniff_encoding） ═══
@@ -43,6 +43,18 @@ class ConvertApp(ttk.Frame):
     日志走全局两级通道（log_summary / log_detail）。
     本类是 ttk.Frame 子类：把自己铺满宿主 Tab，控件都建在 self 上。
     """
+
+    PANEL_PAD = 14          # 与 _build_ui 里的 PAD 同值（页面边距统一 14）
+
+    def _panel(self, parent, title):
+        """统一滚动面板的薄封装：建面板、按本页边距摆好，返回"往里建控件"的容器。
+
+        六个页面都走这一条路（`ScrollPanel`），于是"滚动条什么时候出现"只有一个实现、
+        一条规则：**面板里有东西显示不完全**（控件 + 内部内容）才出现（用户口径 2026-09-13）。
+        """
+        p = ScrollPanel(parent, title)
+        p.pack(fill="x", padx=self.PANEL_PAD, pady=6)
+        return p.body
 
     def __init__(self, parent):
         self.root = parent
@@ -121,8 +133,10 @@ class ConvertApp(ttk.Frame):
 
 
         # ═══ 源目录 ═══
-        source_frame = ttk.LabelFrame(upper, text="源文件夹 / 单个文件")
-        source_frame.pack(fill="x", padx=PAD, pady=6)
+        # 四个面板统一走 `ScrollPanel`（用户口径 2026-09-13："有东西显示不完全就该出滚动条"、
+        # "这种控件应该统一写统一调用"）：面板内部自带横/纵滚动条（自动隐藏）。
+        # 用法上只改一行：面板对象照旧，但内容建在它的 `.body` 里。
+        source_frame = self._panel(upper, "源文件夹 / 单个文件")
         _, self.source_entry = dir_row(source_frame, "源", self.source_dir,
                                        browse=self.select_source,
                                        add=("清除", self.clear_source))
@@ -134,15 +148,13 @@ class ConvertApp(ttk.Frame):
         self.mode_label.pack(anchor="w", padx=10, pady=(0, 6))
 
         # ═══ 输出目录 ═══
-        out_frame = ttk.LabelFrame(upper, text="输出文件夹")
-        out_frame.pack(fill="x", padx=PAD, pady=6)
+        out_frame = self._panel(upper, "输出文件夹")
         _, self.out_entry = dir_row(out_frame, "输出", self.output_dir,
                                     browse=self.select_output,
                                     add=("清除", self.clear_output))
 
         # ═══ 转换设置 ═══
-        set_frame = ttk.LabelFrame(upper, text="转换设置")
-        set_frame.pack(fill="x", padx=PAD, pady=6)
+        set_frame = self._panel(upper, "转换设置")
         set_frame.columnconfigure(5, weight=1)
         # 行0: 源/目标编码
         ttk.Label(set_frame, text="源编码：").grid(row=0, column=0, padx=(10, 4), pady=8, sticky="e")
@@ -199,8 +211,7 @@ class ConvertApp(ttk.Frame):
         ttk.Button(btn_frame, text="导出统计", command=self.export_stats, width=8).pack(side="left", padx=4)
 
         # ═══ 转换进度 (在下区, 日志上方) ═══
-        prog_frame = ttk.LabelFrame(lower, text="转换进度")
-        prog_frame.pack(fill="x", padx=PAD, pady=6)
+        prog_frame = self._panel(lower, "转换进度")
         self.prog_var = tk.DoubleVar()
         self.prog_bar = ttk.Progressbar(prog_frame, variable=self.prog_var, maximum=100)
         self.prog_bar.pack(fill="x", padx=10, pady=(8, 2))
