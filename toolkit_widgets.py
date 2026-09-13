@@ -1040,37 +1040,6 @@ class ScrollViewport(ttk.Frame):
         except Exception:
             return False
 
-    def scroll_wheel(self, event):
-        """视口滚轮：**能滚才吃掉事件**，滚不动就放行（统一规则，与内层控件一致）。
-
-        绑在 toplevel 上（见 Hub 主界面）。两条规则合起来才是用户要的"统一"：
-          * 内层自己能滚的控件（树/文本框）：`CanvasTree._on_wheel` 只在真的滚了时 break；
-            `tk.Text`/`tk.Listbox` 由 Tk 自己的类绑定处理（它**不** break）——
-            所以这里要主动**跳过**它们，否则会出现"文本框滚了、整页也跟着滚"的双滚。
-          * 内层滚不动的（空树、日志到底、面板空白处）：事件走到这里，由本视口滚整页。
-        """
-        try:
-            w = getattr(event, "widget", None)
-            inner = getattr(w, "_ctree", None) is not None          # CanvasTree 的画布
-            try:
-                import tkinter as _tk
-                inner = inner or isinstance(w, (_tk.Text, _tk.Listbox))
-            except Exception:
-                pass
-            if inner:
-                return None                     # 交给内层自己，别双滚
-            first, last = self.canvas.yview()
-            if first <= 0.0 and last >= 1.0:
-                return None                     # 装得下 → 不拦截（放行给更外层）
-            before = (first, last)
-            step = -1 if getattr(event, "delta", 0) > 0 else 1
-            self.canvas.yview_scroll(step * 3, "units")
-            if self.canvas.yview() == before:
-                return None                     # 已经在头/尾，滚不动了 → 交给外层
-            return "break"
-        except Exception:
-            return None
-
     def recolor(self):
         """主题切换：canvas 底色要自己跟（滚动条走 ttk 样式）。"""
         try:
@@ -1776,7 +1745,7 @@ class SplitPane(ttk.Panedwindow):
        可见页里的全部 Tk 控件（每个控件一个 HWND）：实测每步 **33 ms 中位 / 63 ms
        最大**（六页全空的 Notebook 就要 16.9 ms，而且与数据量几乎无关）。鼠标每秒能
        发上百个 motion，若逐个处理，Tk 要排队啃完积压事件，分隔条落后光标几百毫秒
-       —— 用户口径"一卡一卡"主要是这个滞后。因此 `LIVE_DRAG=True` 时**合并运动
+       —— 用户口径"一卡一卡"主要是这个滞后。因此默认档（`LIVE_DRAG="line"`）**合并运动
        事件**：只记最新位置、最多排一次几何应用，滞后不超过一帧；松手再补一次收敛。
        （`LIVE_DRAG=False` 退回"只挪预览线"的旧形态，用于对照/排障。）
     3. **窗口尺寸变化（拖边框）比拖动分隔条贵得多**：实测每步 128~176 ms（当前
@@ -1807,8 +1776,6 @@ class SplitPane(ttk.Panedwindow):
     # full 在 12 fps 挣扎、freeze 会把栏目区留成空白（都已实测/已否决）。
     LIVE_DRAG = "line"
     CLAMP_DEBOUNCE_MS = 120   # 窗口尺寸连续变化时，收敛推迟到"最后一次变化之后"
-    FREEZE_MIN_WIDGETS = 40   # 控件数超过它的窗格才冻结重绘（日志栏那种不冻）
-    FREEZE_MAX_MS = 5000      # 冻结最长存活时间（看门狗），防止卡在"再也不重绘"
 
     def __init__(self, master, orient="vertical", **kw):
         super().__init__(master, orient=orient, **kw)
@@ -1830,8 +1797,6 @@ class SplitPane(ttk.Panedwindow):
         # 收起时留的最小可见量：让分隔条仍然抓得住（完全 0 也可以，ttk 的 sash 本身有宽度，
         # 但留 2px 更稳、也看得见"这里是收起的"）。
         self.COLLAPSE_SLIVER = max(2, px(1))
-        self._frozen = []
-        self._thaw_after = None
         self._clamp_after = None
         self._clamping = False
         # clam 下 sash 本身就有几像素宽，150% 屏上更宽 —— 容差不跟着缩放的话，
@@ -1843,12 +1808,6 @@ class SplitPane(ttk.Panedwindow):
         self.bind("<B1-Motion>", self._rb_motion, add="+")
         self.bind("<ButtonRelease-1>", self._rb_release, add="+")
         self.bind("<Configure>", self._on_configure, add="+")
-        # 安全网：拖动中途窗口被销毁/重建时也要解冻，绝不留下"再也不重绘"的窗口。
-        self.bind("<Destroy>", self._on_destroy, add="+")
-
-    def _on_destroy(self, event=None):
-        if event is None or getattr(event, "widget", None) is self:
-            self._thaw_pane_redraw()
 
     def recolor(self):
         """Apply current theme to the paned window and its sash."""
@@ -2063,86 +2022,11 @@ class SplitPane(ttk.Panedwindow):
         self._clamp()
 
     # ── 拖动：实时跟手（合并 motion）/ 可选预览线 ─────────────────────────
-    def _freeze_pane_redraw(self):
-        """拖动期间冻结**重**窗格内容的重绘（几何照算，只是先不画）。
-
-        为什么：一次"含重绘"的实时应用要 85 ms（12 fps），其中重页面（当前选中
-        栏目页的几十个控件）占大头；冻结它之后降到 32 ms（31 fps），窗格边框与
-        分隔条仍然实时跟手，页面内容在松手时一次补画。
-        只冻结控件数超过阈值的窗格：日志栏那种十来个控件的窗格重绘本来就很便宜，
-        让它们照常实时重绘，用户能看到更多"跟手"的部分。
-        失败一律忽略（非 Windows / 句柄异常）—— 冻结只是优化，不影响功能。
-        """
-        if self._frozen:
-            return
-        try:
-            import ctypes
-            u = ctypes.windll.user32
-        except Exception:
-            return
-        for pane in self._panes():
-            try:
-                if self._count_widgets(pane) <= self.FREEZE_MIN_WIDGETS:
-                    continue
-                h = int(pane.winfo_id())
-                u.SendMessageW(h, 0x000B, 0, 0)      # WM_SETREDRAW = 0x000B
-                self._frozen.append(h)
-            except Exception:
-                pass
-        if self._frozen:
-            # 看门狗：万一 release 事件没到达（焦点丢失/进程收发异常），也必须解冻 ——
-            # 留在"再也不重绘"的状态就是整块界面变空白（用户录屏实证 2026-09-12）。
-            try:
-                if self._thaw_after is not None:
-                    self.after_cancel(self._thaw_after)
-                self._thaw_after = self.after(self.FREEZE_MAX_MS, self._thaw_pane_redraw)
-            except Exception:
-                self._thaw_after = None
-
-    @staticmethod
     def _count_widgets(wd):
         n = 1
         for c in wd.winfo_children():
             n += SplitPane._count_widgets(c)
         return n
-
-    def _thaw_pane_redraw(self):
-        """恢复重绘，并让被冻结的整棵子树**立刻补画**一次。
-
-        关键（用户录屏实证的 bug，2026-09-12）：只对 pane 自己 `InvalidateRect` 不够 ——
-        `WM_SETREDRAW(0)` 之后子窗口也不会被重画，而重新打开父窗口的重绘**不会**让子窗口
-        失效，于是页面留下一片空白 + 错位的陈旧像素（视频 t=12.3s / t=17.3s 两帧）。
-        必须 `RedrawWindow(..., RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN|RDW_UPDATENOW)`，
-        让整棵子树立刻补画。
-        """
-        try:
-            if self._thaw_after is not None:
-                self.after_cancel(self._thaw_after)
-        except Exception:
-            pass
-        self._thaw_after = None
-        if not self._frozen:
-            return
-        try:
-            import ctypes
-            u = ctypes.windll.user32
-            u.RedrawWindow.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
-                                       ctypes.c_void_p, ctypes.c_uint]
-            u.RedrawWindow.restype = ctypes.c_int
-        except Exception:
-            self._frozen = []
-            return
-        # INVALIDATE|ERASE|ALLCHILDREN —— **不要**加 RDW_UPDATENOW(0x0100)：
-        # 它会同步强制整棵子树立刻重画，松手那一下实测从 ~100 ms 涨到 ~490 ms。
-        # 只做"失效"，让正常绘制周期去补画，既修好了陈旧像素也不卡松手。
-        flags = 0x0001 | 0x0004 | 0x0080
-        for h in self._frozen:
-            try:
-                u.SendMessageW(h, 0x000B, 1, 0)
-                u.RedrawWindow(ctypes.c_void_p(h), None, None, flags)
-            except Exception:
-                pass
-        self._frozen = []
 
     def _sash_pos(self, index):
         try:
@@ -2291,8 +2175,6 @@ class SplitPane(ttk.Panedwindow):
         self._drag_pending = False
         if self.LIVE_DRAG == "line":
             self._show_drag_line(event.x, event.y)
-        elif self.LIVE_DRAG == "freeze":
-            self._freeze_pane_redraw()
         return "break"          # 阻止 ttk 自己的逐事件重排
 
     def _rb_motion(self, event):
@@ -2355,7 +2237,6 @@ class SplitPane(ttk.Panedwindow):
         # 顺序反了的话收起的栏会被立刻推回来。
         self._note_user_collapse(index)
         # 顺序：先解冻（让页面把新尺寸画出来），再补自绘控件与 minsize 收敛。
-        self._thaw_pane_redraw()
         self.refresh_children()      # 自绘控件（CanvasTree）补一次重绘
         self._clamp()
         return "break"

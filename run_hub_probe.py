@@ -575,39 +575,9 @@ def main():
             top.update_idletasks()
             assert int(sp.sashpos(0)) != before, "松手必须真正应用一次尺寸变化"
             assert sp._drag is None, "松手后应退出拖动状态"
-            assert not sp._frozen, "松手后不许残留冻结重绘的窗口（否则窗口再也不刷新）"
             return True
         check("SplitPane：合并 motion（拖动期不同步改几何）、松手应用一次且不留冻结",
               _split_drag_is_preview)
-
-        def _split_drag_mode_and_freeze():
-            from toolkit import SplitPane as _SP
-            assert _SP.LIVE_DRAG in ("full", "freeze", "line"), \
-                "LIVE_DRAG 只允许 full/freeze/line，实际 %r" % (_SP.LIVE_DRAG,)
-            sp = _SP_STATE["sp"]
-            top = _SP_STATE["top"]
-            sp._thaw_pane_redraw()
-            top.update()
-
-            class _Ev:
-                pass
-
-            pos = int(sp.sashpos(0))
-            ev = _Ev(); ev.x = sp.winfo_width() // 2; ev.y = pos
-            sp._rb_press(ev)
-            if _SP.LIVE_DRAG == "freeze":
-                assert sp._frozen, "freeze 档按下后应冻结重窗格的重绘（否则没有降载效果）"
-                assert len(sp._frozen) == 1, \
-                    "只该冻结重窗格：夹具里重窗格 1 个、轻窗格 1 个，实际冻结 %d 个" % len(sp._frozen)
-            else:
-                assert not sp._frozen, "%s 档不该冻结重绘" % (_SP.LIVE_DRAG,)
-            ev2 = _Ev(); ev2.x = ev.x; ev2.y = pos + 20
-            sp._rb_release(ev2)
-            top.update_idletasks()
-            assert not sp._frozen, "松手必须解冻"
-            return True
-        check("SplitPane：LIVE_DRAG 三档合法；freeze 档按下冻结、松手解冻",
-              _split_drag_mode_and_freeze)
 
         def _split_bindings_wired():
             """真实事件路径：event_generate 走 Tk 绑定链（不是直接调处理器）。
@@ -627,8 +597,6 @@ def main():
             sp.event_generate("<Button-1>", x=cx, y=sash)
             top.update()
             assert sp._drag is not None, "真实 Button-1 没进拖动：bind 掉了？"
-            if _SP2.LIVE_DRAG == "freeze":
-                assert sp._frozen, "freeze 档真实按下后应已冻结重窗格重绘"
             sp.event_generate("<B1-Motion>", x=cx, y=sash + 40)
             # line 档：运动只挪预览线，几何要等松手；其余档：合并后由 after 应用一次。
             if _SP2.LIVE_DRAG == "line":
@@ -644,7 +612,6 @@ def main():
             sp.event_generate("<ButtonRelease-1>", x=cx, y=sash + 40)
             top.update()
             assert int(sp.sashpos(0)) == sash + 40, "真实 ButtonRelease-1 没落到目标位置"
-            assert not sp._frozen, "真实松手后不许残留冻结"
             # 点在不含 sash 的位置：不能被吞掉（否则普通点击全失效）
             sp.event_generate("<Button-1>", x=cx, y=max(1, sash - 40))
             top.update()
@@ -652,27 +619,6 @@ def main():
             return True
         check("SplitPane：真实事件路径可用（绑定未丢、break 生效、普通点击不被吞）",
               _split_bindings_wired)
-
-        def _split_thaw_repaints_children():
-            """解冻必须让**整棵子树**补画，不能只失效父窗口。
-
-            用户录屏实证（2026-09-12）：只对 pane 自己 `InvalidateRect`，子窗口留在
-            `WM_SETREDRAW(0)` 期间的状态 —— 页面整片空白 + 错位陈旧像素，且不会自愈。
-            屏幕抓图逐像素比对实测：旧实现与参考图差 **16.3%**，现实现 **1.65%**
-            （噪声底 1.54%）。
-            """
-            import inspect
-            from toolkit import SplitPane as _SP3
-            src = inspect.getsource(_SP3._thaw_pane_redraw)
-            assert "RedrawWindow" in src, \
-                "解冻没有用 RedrawWindow：子窗口不会补画（页面会留大片空白）"
-            assert "0x0080" in src or "RDW_ALLCHILDREN" in src, \
-                "RedrawWindow 少了 RDW_ALLCHILDREN：只补画父窗口，子窗口仍是陈旧像素"
-            assert "FREEZE_MAX_MS" in inspect.getsource(_SP3._freeze_pane_redraw), \
-                "冻结没有设看门狗：release 丢失时窗口会永远不再重绘"
-            return True
-        check("SplitPane：解冻递归补画子树 + 冻结有看门狗（录屏实证的空白页 bug）",
-              _split_thaw_repaints_children)
 
         def _split_preview_filled():
             """line 档拖动期：预览必须是**填色区域**，不是一条线（用户口径 2026-09-13）。
@@ -1092,37 +1038,47 @@ def main():
               lambda: _vp["fill_w"] >= 240)
 
         def _wheel_rules():
-            """统一规则（用户口径 2026-09-13）：**能滚才吃事件，滚不动放行**。
+            """统一滚轮规则（用户口径 2026-09-13）：**能滚才吃事件，滚不动就一层层往外**。
 
-            两条断言（都按源码 AST，不靠人眼）：
+            三条断言（按源码 AST，不靠人眼）：
               ① `CanvasTree._on_wheel` 必须**有条件** break（原来无条件 break → 鼠标停在
                  树上时整页滚不动，用户："这很反直觉"）；
-              ② `ScrollViewport.scroll_wheel` 必须**跳过内层可滚控件**（Text/Listbox/CanvasTree），
-                 否则文本框滚了、整页也跟着滚（双滚）。
+              ② `ScrollViewport.try_scroll()` 必须存在 —— 它是统一路由的落点
+                 （曾经的 `scroll_wheel()` 已删除：路由改用 try_scroll）；
+              ③ hub 的 `_wheel_router` 里**不许**再出现"指针下是内层可滚控件就整体跳过"
+                 的分支 —— 有那段时，内层（树/文本框）滚不动时事件被直接丢弃，
+                 整页也跟着不滚（用户实测："小滚动条隐藏时大滚动条滚不动"）。
             """
             import ast
             src = io.open(os.path.join(BASE, "toolkit_widgets.py"), encoding="utf-8").read()
             tree = ast.parse(src)
-            cond_break = False
-            skip_inner = False
+            cond_break = try_scroll = False
             for node in ast.walk(tree):
                 if isinstance(node, ast.FunctionDef) and node.name == "_on_wheel":
                     for n in ast.walk(node):
                         if isinstance(n, ast.Return) and isinstance(n.value, ast.IfExp):
                             cond_break = True
-                if isinstance(node, ast.FunctionDef) and node.name == "scroll_wheel":
+                if isinstance(node, ast.FunctionDef) and node.name == "try_scroll":
+                    try_scroll = True
+            hub = io.open(os.path.join(BASE, "stalker_toolkit.py"), encoding="utf-8").read()
+            htree = ast.parse(hub)
+            skip_inner = False
+            for node in ast.walk(htree):
+                if isinstance(node, ast.FunctionDef) and node.name == "_wheel_router":
                     for n in ast.walk(node):
-                        if isinstance(n, ast.Attribute) and n.attr in ("Text", "Listbox"):
+                        if isinstance(n, ast.Constant) and n.value in ("_ctree", "Text", "Listbox"):
                             skip_inner = True
-                        if isinstance(n, ast.Constant) and n.value == "_ctree":
-                            skip_inner = True
-            return {"cond_break": cond_break, "skip_inner": skip_inner}
+            return {"cond_break": cond_break, "try_scroll": try_scroll,
+                    "skip_inner": skip_inner}
         _wr = _wheel_rules()
         print("        滚轮规则：%r" % (_wr,))
         check("滚轮规则①：CanvasTree 只在**真的滚动了**时才 break（滚不动则冒泡给外层）",
               lambda: _wr["cond_break"])
-        check("滚轮规则②：视口滚轮**跳过内层可滚控件**（避免整页跟着一起滚）",
-              lambda: _wr["skip_inner"])
+        check("滚轮规则②：ScrollViewport 提供 try_scroll()（统一路由的落点）",
+              lambda: _wr["try_scroll"])
+        check("滚轮规则③：路由里**不许**出现『跳过内层控件』的分支"
+              "（有它则内层滚不动时整页也不滚）",
+              lambda: not _wr["skip_inner"])
 
         def _scroll_panel_rule():
             """统一滚动面板：出现条件 = **面板里有东西显示不完全**（用户口径 2026-09-13）。
