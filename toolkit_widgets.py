@@ -655,9 +655,11 @@ def dir_row(parent, label, var, browse=None, drop=None, add=None, width=8, state
     from tkinter import ttk as _ttk
     from tkinter import Entry as _Entry
     row = _ttk.Frame(parent)
-    row.pack(fill="x", pady=(0, 4))
+    # 留白（2026-09-13 排版统一）：组内行距 6、行与行之间靠这个 pady 拉开。
+    # 原来只有 4px，六个页面里"输入/输出/搜索"这几行会挤成一片。
+    row.pack(fill="x", pady=(0, 6))
     if label:
-        _ttk.Label(row, text=label, width=width).pack(side="left")
+        _ttk.Label(row, text=label, width=width).pack(side="left", padx=(0, 6))
     e = _Entry(row, textvariable=var, bg=color("entry_bg"), fg=color("text"),
                insertbackground=color("text"), relief="flat", bd=0,
                disabledbackground=color("entry_bg"), disabledforeground=color("text"),
@@ -665,7 +667,7 @@ def dir_row(parent, label, var, browse=None, drop=None, add=None, width=8, state
                highlightcolor=color("accent"), font=T["font_mono"])
     if state:
         e.configure(state=state)
-    e.pack(side="left", fill="x", expand=True, ipady=3)
+    e.pack(side="left", fill="x", expand=True, ipady=4)
     if drop is not None:
         try:
             if hasattr(e, "drop_target_register"):
@@ -674,9 +676,9 @@ def dir_row(parent, label, var, browse=None, drop=None, add=None, width=8, state
         except Exception:
             pass
     if browse:
-        _ttk.Button(row, text="浏览", width=6, command=browse).pack(side="left", padx=(6, 0))
+        _ttk.Button(row, text="浏览", width=6, command=browse).pack(side="left", padx=(8, 0))
     if add:
-        _ttk.Button(row, text=add[0], width=6, command=add[1]).pack(side="left", padx=(4, 0))
+        _ttk.Button(row, text=add[0], width=6, command=add[1]).pack(side="left", padx=(6, 0))
     install_blank_click_unfocus(e)          # 点空白处能取消输入框的焦点/选中
     return row, e
 

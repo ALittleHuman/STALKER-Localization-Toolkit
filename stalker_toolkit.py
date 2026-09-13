@@ -263,7 +263,8 @@ if __name__ == "__main__":
         root.configure(bg=color("bg"))
 
         header = ttk.Frame(root)
-        header.pack(fill="x", padx=14, pady=(12, 4))
+        # 留白统一（2026-09-13）：外壳 14 / 分组 10 / 组内 6。
+        header.pack(fill="x", padx=16, pady=(14, 8))
         ttk.Label(header, text=APP_NAME, style="Title.TLabel").pack(side="left")
         # 主题下拉框在右, 标签在其左侧
         theme_var = tk.StringVar(value="暗色" if mode == "dark" else "亮色")
@@ -287,7 +288,7 @@ if __name__ == "__main__":
         # 两个 minsize 用同一组变量：否则"栏目的下限"与"日志的下限"会各说各话。
         min_top, min_log = px(260), px(110)
         nb_paned = SplitPane(root, orient="vertical")
-        nb_paned.pack(fill="both", expand=True, padx=10, pady=(4, 2))
+        nb_paned.pack(fill="both", expand=True, padx=14, pady=(2, 6))
         nb_box = nb_paned.add_clipped(weight=3, minsize=min_top, fit="content")
         nb = ttk.Notebook(nb_box)
         nb.pack(fill="both", expand=True)

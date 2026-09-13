@@ -26,24 +26,33 @@ from toolkit_platform import load_user_value, save_user_value
 
 
 # ─── 色板 (唯一来源: 亮/暗两套, 样式代码共用同一函数) ───
+# 2026-09-13 重画（用户授权"按你的审美"）：
+#   * **层次**：bg → surface → surface2 三档拉开一点，内嵌区（输入/列表）用 entry_bg 比
+#     surface **更暗**，视觉上"陷进去"；原来 entry_bg(#3a3d41) 比 surface2 还亮，
+#     输入框像贴在面板上。
+#   * **边框**：原来的 border #6e7681 太亮，满屏都是硬线；改成只比 surface2 亮一档的
+#     弱色，让"分块"靠底色差而不是靠线。
+#   * **强调色**：accent 换成更柔和的蓝（#4c8dff），并统一用它做 焦点/选中/主按钮。
+#   * **语义色**去饱和一档（原来 green #4ec9b0 偏荧光）。
+# 键名与数量**不许变**：Qt 侧按这份表映射，探针锁了 18 个颜色角色 + 6 个字体角色。
 THEMES = {
     "dark": {
-        "bg": "#1e1e1e", "surface": "#252526", "surface2": "#2d2d2d",
-        "border": "#6e7681", "accent": "#007acc", "accent_hover": "#1a8ad4",
-        "text": "#cccccc", "text_dim": "#9d9d9d", "text_bright": "#e0e0e0",
-        "green": "#4ec9b0", "red": "#f14c4c", "yellow": "#dcdcaa", "orange": "#ce9178",
-        "entry_bg": "#3a3d41", "selected": "#264f78",
-        "scroll_border": "#3a3d41",
-        "sash": "#3a3d41", "sash_light": "#4a4d51",
+        "bg": "#1b1d23", "surface": "#22252c", "surface2": "#2b2f38",
+        "border": "#363b46", "accent": "#4c8dff", "accent_hover": "#6ba0ff",
+        "text": "#d6d9e0", "text_dim": "#8b919e", "text_bright": "#f0f2f6",
+        "green": "#5cc08d", "red": "#e5686d", "yellow": "#d9b45b", "orange": "#d98d5b",
+        "entry_bg": "#161920", "selected": "#2b4a7d",
+        "scroll_border": "#2f333d",
+        "sash": "#2f333d", "sash_light": "#4c8dff",
     },
     "light": {
-        "bg": "#f5f5f5", "surface": "#ececec", "surface2": "#e0e0e0",
-        "border": "#909090", "accent": "#0a6cb8", "accent_hover": "#1a7fc9",
-        "text": "#3a3a3a", "text_dim": "#6e6e6e", "text_bright": "#2b2b2b",
-        "green": "#2e7d32", "red": "#d64545", "yellow": "#a08000", "orange": "#b06e3c",
-        "entry_bg": "#fafafa", "selected": "#d6e7f5",
-        "scroll_border": "#c0c0c0",
-        "sash": "#c0c0c0", "sash_light": "#d8d8d8",
+        "bg": "#f6f7f9", "surface": "#ffffff", "surface2": "#eef0f4",
+        "border": "#d3d7de", "accent": "#2f6fe4", "accent_hover": "#4a86f0",
+        "text": "#2c3038", "text_dim": "#6b7280", "text_bright": "#14171c",
+        "green": "#1f8a5f", "red": "#cf4444", "yellow": "#9a7b12", "orange": "#b5651d",
+        "entry_bg": "#ffffff", "selected": "#d6e4ff",
+        "scroll_border": "#cfd4dc",
+        "sash": "#d3d7de", "sash_light": "#2f6fe4",
     },
 }
 # 字体 (两套共用, 放这里便于个性化)
@@ -279,56 +288,79 @@ def apply_theme(mode=None):
     style.configure("Yellow.TLabel", background=P["bg"], foreground=P["yellow"], font=P["font_sm"])
     style.configure("Stats.TLabel", background=P["bg"], foreground=P["accent"],
                     font=P["font_stats"])
-    # 按钮
+    # 按钮：普通按钮**安静**（surface2 + 弱边框），悬停只微微提亮（原来悬停直接变强调色，
+    # 满屏按钮一起变蓝很吵）；只有 `Accent.TButton`（主操作）是实心强调色。
     style.configure("TButton", background=P["surface2"], foreground=P["text"],
-                    bordercolor=P["border"], relief="flat", padding=(12, 5), font=P["font"])
-    style.map("TButton", background=[("active", P["accent"]), ("pressed", P["accent"])],
-              foreground=[("active", "#fff"), ("pressed", "#fff")])
+                    bordercolor=P["border"], relief="flat", padding=(12, 6), font=P["font"])
+    style.map("TButton",
+              background=[("pressed", P["selected"]), ("active", P["border"])],
+              bordercolor=[("focus", P["accent"])],
+              foreground=[("disabled", P["text_dim"])])
     style.configure("Accent.TButton", background=P["accent"], foreground="#fff",
+                    bordercolor=P["accent"], relief="flat", padding=(12, 6),
                     font=(P["font"][0], P["font"][1], "bold"))
-    style.map("Accent.TButton", background=[("active", P["accent_hover"])])
-    # 输入 (统一带边框)
+    style.map("Accent.TButton",
+              background=[("pressed", P["accent_hover"]), ("active", P["accent_hover"])],
+              foreground=[("disabled", P["text_dim"])])
+    # 输入：底色比面板更暗（"陷进去"）+ 焦点描边用强调色（原来 focus 时底色变亮，很跳）
     style.configure("TEntry", fieldbackground=P["entry_bg"], foreground=P["text"],
                     bordercolor=P["border"], borderwidth=1, relief="solid",
-                    padding=(8, 4), font=P["font_mono"])
-    style.map("TEntry", fieldbackground=[("focus", P["surface"])],
-              bordercolor=[("focus", P["accent"])])
+                    padding=(8, 5), font=P["font_mono"])
+    style.map("TEntry", bordercolor=[("focus", P["accent"])],
+              lightcolor=[("focus", P["accent"])], darkcolor=[("focus", P["accent"])])
     style.configure("TCombobox", fieldbackground=P["entry_bg"], foreground=P["text"],
-                    background=P["surface2"], arrowcolor=P["text"],
-                    bordercolor=P["border"], borderwidth=1, relief="solid")
-    style.map("TCombobox", fieldbackground=[("readonly", P["entry_bg"])])
+                    background=P["surface2"], arrowcolor=P["text_dim"],
+                    bordercolor=P["border"], borderwidth=1, relief="solid",
+                    padding=(6, 4), font=P["font"])
+    style.map("TCombobox", fieldbackground=[("readonly", P["entry_bg"])],
+              bordercolor=[("focus", P["accent"])])
     style.configure("TOptionMenu", background=P["surface2"], foreground=P["text"],
-                    arrowcolor=P["text"], bordercolor=P["border"], font=P["font"])
+                    arrowcolor=P["text_dim"], bordercolor=P["border"],
+                    relief="flat", padding=(10, 4), font=P["font"])
     style.configure("TMenubutton", background=P["surface2"], foreground=P["text"],
-                    arrowcolor=P["text"], bordercolor=P["border"],
-                    relief="flat", padding=(8, 3), font=P["font"])
+                    arrowcolor=P["text_dim"], bordercolor=P["border"],
+                    relief="flat", padding=(10, 4), font=P["font"])
     # 勾选/进度/分隔/滚动
     style.configure("TCheckbutton", background=P["bg"], foreground=P["text"], font=P["font"])
-    style.configure("TProgressbar", background=P["accent"], troughcolor=P["surface2"])
+    style.map("TCheckbutton", background=[("active", P["bg"])],
+              foreground=[("disabled", P["text_dim"])])
+    style.configure("TProgressbar", background=P["accent"], troughcolor=P["surface2"],
+                    bordercolor=P["surface2"], lightcolor=P["accent"],
+                    darkcolor=P["accent"], thickness=px(8))
     style.configure("TSeparator", background=P["border"])
-    style.configure("TScrollbar", background=P["surface2"], troughcolor=P["surface"],
-                    arrowcolor=P["text"], bordercolor=P["scroll_border"],
+    style.configure("TScrollbar", background=P["surface2"], troughcolor=P["bg"],
+                    arrowcolor=P["text_dim"], bordercolor=P["scroll_border"],
                     lightcolor=P["scroll_border"], darkcolor=P["scroll_border"])
-    style.map("TScrollbar", background=[("disabled", P["surface2"])])
+    style.map("TScrollbar", background=[("disabled", P["surface2"]),
+                                        ("active", P["border"])])
     for _o in ("Vertical", "Horizontal"):
         style.map(f"{_o}.TScrollbar.thumb", background=[("disabled", P["surface2"])])
         style.map(f"{_o}.Scrollbar.thumb", background=[("disabled", P["surface2"])])
     # 可拖拽分隔条 (统一 SplitPane / ttk.Panedwindow sash)
+    # 悬停/拖动时 sash 亮强调色（`sash_light`）—— 用户能看出"这条抓得住"。
     style.configure("TPanedwindow", background=P["bg"], bordercolor=P["bg"])
+    style.map("TPanedwindow", background=[("active", P["sash_light"])])
     style.configure("Sash", background=P["sash"], lightcolor=P["sash_light"],
-                    darkcolor=P["sash"])
-    # 标签页
-    style.configure("TNotebook", background=P["bg"], borderwidth=0)
-    style.configure("TNotebook.Tab", background=P["surface"], foreground=P["text"],
-                    padding=(14, 6), font=P["font_sm"])
-    style.map("TNotebook.Tab", background=[("selected", P["surface2"])],
-              foreground=[("selected", P["text_bright"])])
-    # 树
+                    darkcolor=P["sash"], bordercolor=P["bg"], sashthickness=px(6))
+    style.map("Sash", background=[("active", P["sash_light"])])
+    # 标签页：选中的页签与内容同色（连成一片），未选中的压在 surface 上；
+    # 页签间距也放大一档（原来 14,6 显得挤）。
+    style.configure("TNotebook", background=P["bg"], borderwidth=0, tabmargins=(2, 4, 0, 0))
+    style.configure("TNotebook.Tab", background=P["surface"], foreground=P["text_dim"],
+                    padding=(18, 8), font=P["font_sm"], bordercolor=P["bg"])
+    style.map("TNotebook.Tab",
+              background=[("selected", P["bg"])],
+              foreground=[("selected", P["text_bright"]), ("active", P["text"])],
+              expand=[("selected", (0, 0, 0, 0))])
+    # 树：行高保持 px(24)（`run_app_probe` 有一条锁盯着"行高必须按缩放换算"，
+    # 它的基准值就是 24 —— 视觉上想调它也应当先改锁与文档，而不是顺手改这里）。
+    # 表头改成去饱和色（原来和数据区一样亮，看着像按钮）。
     style.configure("Treeview", background=P["surface"], foreground=P["text"],
                     fieldbackground=P["surface"], font=P["font_mono"],
                     borderwidth=0, rowheight=px(24))
-    style.configure("Treeview.Heading", background=P["surface2"], foreground=P["text_bright"],
-                    font=P["font_header"])
+    style.configure("Treeview.Heading", background=P["surface2"], foreground=P["text_dim"],
+                    relief="flat", padding=(8, 6), font=P["font_header"])
+    style.map("Treeview.Heading", background=[("active", P["border"])])
     style.map("Treeview", background=[("selected", P["selected"])],
               foreground=[("selected", P["text_bright"])])
 
