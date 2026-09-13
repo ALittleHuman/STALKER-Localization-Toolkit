@@ -151,9 +151,8 @@ class FSToolApp:
             status_setter=lambda text, kind="idle": self.status_lbl.configure(
                 text=text, style=status_style_name(kind)),
             progress_setter=self._on_progress,
-            progress_started=self.progress.start,
-            progress_stopped=lambda: (self.progress.stop(),
-                                      self.progress.configure(mode="indeterminate")),
+            progress_started=self._progress_show,
+            progress_stopped=self._progress_hide,
         )
         # 插件右键项的 when 依赖 loaded：构造时先算一次（此刻 loaded 为空）
         self._refresh_plugin_context_menu()
@@ -198,10 +197,16 @@ class FSToolApp:
             # 统一目录行 (toolkit.dir_row): 标签+输入框+浏览+拖拽
             dir_row(self.root, label, var, browse=cmd, drop=drop)
 
+        # 状态行：**空闲时只占一行文字**，进度条在有任务时才出现。
+        # 用户口径 2026-09-13（"布局也能改"）：原来进度条常驻、和"就绪"各占一行，
+        # 而它 99% 时间是空的 —— 白占一行高度、还把下面的工作区顶下去。
+        # 这与"滚动条平时隐藏"是同一条原则：**空着的东西不该占位**。
         pg = ttk.Frame(self.root); pg.pack(fill="x", padx=P, pady=(4, 2))
         self.progress = ttk.Progressbar(pg, mode="indeterminate")
-        self.progress.pack(fill="x")
-        self.status_lbl = ttk.Label(pg, text="就绪", style=status_style_name("idle"), font=color("font_sm")); self.status_lbl.pack(anchor="w")
+        self.status_lbl = ttk.Label(pg, text="就绪", style=status_style_name("idle"),
+                                    font=color("font_sm"))
+        self.status_lbl.pack(side="left")
+        self._progress_packed = False        # 进度条此刻有没有占位（见 _progress_show/hide）
 
         outer = SplitPane(self.root, orient="vertical")
         outer.pack(fill="both", expand=True, padx=P, pady=(0,2))
@@ -377,6 +382,27 @@ class FSToolApp:
                     b.configure(state=state)
                 except Exception:
                     pass
+
+    def _progress_show(self):
+        """有任务了：进度条**出现**在状态行右侧（空闲时不占位）。"""
+        try:
+            if not self._progress_packed:
+                self.progress.pack(side="left", fill="x", expand=True, padx=(10, 0))
+                self._progress_packed = True
+            self.progress.start()
+        except Exception:
+            pass
+
+    def _progress_hide(self):
+        """任务收尾：停下、复位、**收掉**。"""
+        try:
+            self.progress.stop()
+            self.progress.configure(mode="indeterminate")
+            if self._progress_packed:
+                self.progress.pack_forget()
+                self._progress_packed = False
+        except Exception:
+            pass
 
     def _on_progress(self, v):
         """TaskRunner 的进度写入口：按当前模式把入参归一化成 0~100。"""
