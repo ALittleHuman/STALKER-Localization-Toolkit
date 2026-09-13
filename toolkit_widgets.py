@@ -1136,7 +1136,12 @@ class LogBox(tk.Text):
         super().__init__(parent, bg=T["surface"], fg=T["text"],
                          insertbackground=T["text"], font=T["font_mono"],
                          relief="flat", borderwidth=0, wrap=wrap,
-                         state="disabled", height=height)
+                         state="disabled", height=height,
+                         # 同 CanvasTree 的理由：`tk.Text` 默认请求宽度是 **80 字符**
+                         # （≈640px），而窗格/窗口的"内容宽度"按请求宽度算 —— 会给
+                         # ttk.Panedwindow 一个虚高的下限（拖分隔条被它挡住），
+                         # 在裁剪窗格里还会让面板被撑到窗格之外。宽度本来就由 fill/expand 决定。
+                         width=1)
         self._timestamp = timestamp
         self._tag_roles = self._BASE_TAGS + (tags or [])
         self.recolor()
@@ -1251,8 +1256,13 @@ class CanvasTree:
         # 顶到 700+ px，于是 Hub 的 Notebook 请求高度超过窗口，ttk.Panedwindow 只能把
         # 最后一个 pane（日志栏）压成 1 px（实测 1024x700 / 1280x860，见 UI 回执）。
         # px(120) 仍够显示 4~5 行，且不再绑架整页布局。
+        # **宽度必须显式给小**（2026-09-13 实机抓到的 bug）：`tk.Canvas` 不给 width 时
+        # 默认请求宽度是 **378px**，而窗格里的"内容宽度"就是按请求宽度算的 —— 于是
+        # "内容比窗格宽"永远成立：面板被撑到窗格之外（**右边框被裁掉**）、
+        # 底部还常驻一条横向滚动条。树本来就是宽度弹性的，请求宽度给 1 个设计像素即可
+        # （外面一律 fill/expand，有空间就长）。
         self.canvas = tk.Canvas(self.frame, bg=T["surface"], highlightthickness=0,
-                                height=px(120), bd=0)
+                                height=px(120), width=px(1), bd=0)
         self.canvas._ctree = self  # 主题切换遍历时定位到本 wrapper
         self.vbar = AutoScrollbar(self.frame, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self._yscrollcmd)
