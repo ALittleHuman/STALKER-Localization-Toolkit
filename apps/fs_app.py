@@ -318,7 +318,10 @@ class FSToolApp:
 
     def _build_pack_panel(self, parent):
         pf = ttk.LabelFrame(parent, text="封包", padding=4)
-        parent.add(pf, weight=1)
+        # 封包栏也要有**最小高度**（2026-09-13 用户口径："封包只漏了一点点"）：
+        # 没有它时，窗口一矮这一栏就被挤成十来像素（实测 10px），
+        # 里面的"输出/浏览/封包"按钮全看不见 —— 而它是本工具的第二主操作区。
+        parent.add(pf, weight=1, minsize=px(120))
         # Row 1: format + output + pack button
         row1 = ttk.Frame(pf); row1.pack(fill="x", pady=(0,2))
         self.pack_fmt_var = tk.StringVar(value="xdb")

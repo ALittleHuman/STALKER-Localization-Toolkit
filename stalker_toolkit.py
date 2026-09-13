@@ -287,9 +287,20 @@ if __name__ == "__main__":
         # 装不下由**它自己**的滚动条解决），日志栏回到普通窗格、由它自己的滚动条管。
         # 两个 minsize 用同一组变量：否则"栏目的下限"与"日志的下限"会各说各话。
         min_top, min_log = px(260), px(110)
+        # 栏目内容的**最小高度**（"页面至少需要多高才可用"）。为什么需要它：
+        # 栏目页都关了 pack_propagate，所以 Notebook 的请求高度是 1 —— 单靠请求高度
+        # 没人知道页面需要多高，窗口一矮就只能在页面**内部**硬挤（实测"封包"被挤到 10px）。
+        # 给视口一个下限之后：窗口够高 → 内容随视口铺满；窗口不够 → 内容保持这个下限、
+        # 由栏目区**自己的滚动条**解决（日志栏不受影响，用户口径 2026-09-13）。
+        PAGE_MIN_H = px(430)
         nb_paned = SplitPane(root, orient="vertical")
         nb_paned.pack(fill="both", expand=True, padx=14, pady=(2, 6))
         nb_box = nb_paned.add_clipped(weight=3, minsize=min_top, fit="content")
+        try:
+            nb_paned.panes()[0]._min_y = PAGE_MIN_H      # 视口下限 = 页面最小高度
+            nb_paned.panes()[0]._sync()
+        except Exception:
+            pass
         nb = ttk.Notebook(nb_box)
         nb.pack(fill="both", expand=True)
         # 滚轮绑在**窗口**上，但只滚栏目区那个视口：内层可滚控件（日志/树）自己消费时会 break，
