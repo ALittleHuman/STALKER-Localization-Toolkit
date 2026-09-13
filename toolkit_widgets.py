@@ -817,17 +817,32 @@ class ScrollViewport(ttk.Frame):
             pass
 
     def scroll_wheel(self, event):
-        """窗口级滚轮：本视口能滚才滚，返回 "break"；否则放行给内层控件。
+        """视口滚轮：**能滚才吃掉事件**，滚不动就放行（统一规则，与内层控件一致）。
 
-        绑在 toplevel 上（见 Hub 主界面）时，内层可滚控件若自己消费了滚轮会 `break`，
-        事件就到不了这里 —— 所以"日志栏里滚日志、空白处滚整页"两不冲突。
+        绑在 toplevel 上（见 Hub 主界面）。两条规则合起来才是用户要的"统一"：
+          * 内层自己能滚的控件（树/文本框）：`CanvasTree._on_wheel` 只在真的滚了时 break；
+            `tk.Text`/`tk.Listbox` 由 Tk 自己的类绑定处理（它**不** break）——
+            所以这里要主动**跳过**它们，否则会出现"文本框滚了、整页也跟着滚"的双滚。
+          * 内层滚不动的（空树、日志到底、面板空白处）：事件走到这里，由本视口滚整页。
         """
         try:
+            w = getattr(event, "widget", None)
+            inner = getattr(w, "_ctree", None) is not None          # CanvasTree 的画布
+            try:
+                import tkinter as _tk
+                inner = inner or isinstance(w, (_tk.Text, _tk.Listbox))
+            except Exception:
+                pass
+            if inner:
+                return None                     # 交给内层自己，别双滚
             first, last = self.canvas.yview()
             if first <= 0.0 and last >= 1.0:
-                return None                    # 装得下 → 不拦截
+                return None                     # 装得下 → 不拦截（放行给更外层）
+            before = (first, last)
             step = -1 if getattr(event, "delta", 0) > 0 else 1
             self.canvas.yview_scroll(step * 3, "units")
+            if self.canvas.yview() == before:
+                return None                     # 已经在头/尾，滚不动了 → 交给外层
             return "break"
         except Exception:
             return None
@@ -1537,9 +1552,17 @@ class CanvasTree:
         self._draw()
 
     def _on_wheel(self, e):
+        """滚轮：**能滚才吃掉事件**，滚不动就让它冒泡给外层（统一规则）。
+
+        用户口径 2026-09-13："不能在隐藏滚动条的那些小窗口操控，这很反直觉。"
+        原来这里无条件 `return "break"` —— 树滚不动（只有几行/已到底）时也把事件吃掉，
+        于是鼠标停在树上时**整页滚不动**。改成只在"yview 真的变了"时 break。
+        """
+        before = self.canvas.yview()
         self.canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
+        after = self.canvas.yview()
         self._draw()
-        return "break"
+        return "break" if after != before else None
 
     def get_selected_paths(self):
         return [n.path for n in self._sel if n.path]

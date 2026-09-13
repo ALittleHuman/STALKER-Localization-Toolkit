@@ -1089,6 +1089,39 @@ def main():
               lambda: _vp["content_scrolls"] and _vp["content_h"] >= 700)
         check("ScrollViewport：纵向视口里内容横向铺满（页面不留缝）",
               lambda: _vp["fill_w"] >= 240)
+
+        def _wheel_rules():
+            """统一规则（用户口径 2026-09-13）：**能滚才吃事件，滚不动放行**。
+
+            两条断言（都按源码 AST，不靠人眼）：
+              ① `CanvasTree._on_wheel` 必须**有条件** break（原来无条件 break → 鼠标停在
+                 树上时整页滚不动，用户："这很反直觉"）；
+              ② `ScrollViewport.scroll_wheel` 必须**跳过内层可滚控件**（Text/Listbox/CanvasTree），
+                 否则文本框滚了、整页也跟着滚（双滚）。
+            """
+            import ast
+            src = io.open(os.path.join(BASE, "toolkit_widgets.py"), encoding="utf-8").read()
+            tree = ast.parse(src)
+            cond_break = False
+            skip_inner = False
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef) and node.name == "_on_wheel":
+                    for n in ast.walk(node):
+                        if isinstance(n, ast.Return) and isinstance(n.value, ast.IfExp):
+                            cond_break = True
+                if isinstance(node, ast.FunctionDef) and node.name == "scroll_wheel":
+                    for n in ast.walk(node):
+                        if isinstance(n, ast.Attribute) and n.attr in ("Text", "Listbox"):
+                            skip_inner = True
+                        if isinstance(n, ast.Constant) and n.value == "_ctree":
+                            skip_inner = True
+            return {"cond_break": cond_break, "skip_inner": skip_inner}
+        _wr = _wheel_rules()
+        print("        滚轮规则：%r" % (_wr,))
+        check("滚轮规则①：CanvasTree 只在**真的滚动了**时才 break（滚不动则冒泡给外层）",
+              lambda: _wr["cond_break"])
+        check("滚轮规则②：视口滚轮**跳过内层可滚控件**（避免整页跟着一起滚）",
+              lambda: _wr["skip_inner"])
         def _hub_window_scroll_wiring():
             """AST：栏目区必须**自己滚**，且**不得**把日志栏塞进窗口级滚动条（用户口径）。
 
