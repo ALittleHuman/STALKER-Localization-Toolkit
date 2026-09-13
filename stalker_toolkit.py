@@ -310,6 +310,35 @@ if __name__ == "__main__":
                 root.bind("<MouseWheel>", nb_view.scroll_wheel, add="+")
             except Exception as e:
                 log_summary(f"栏目区滚轮绑定失败：{e}", "warn")
+        # ── 统一滚轮路由（用户口径 2026-09-13："窗口内还是不能滚轮操控"）────────
+        # Tk 只把滚轮送到"指针下那个控件"的 bindtags（控件 → 类 → 顶层 → all）；
+        # 面板/页面内部的视口 canvas **不在**那条链上，所以给"顶层绑一个处理器"这种
+        # 做法只能滚到最外层那一个视口。这里改成**一条路由**：
+        #   ① 指针下是内层自己能滚的控件（文本框 / 列表 / 树）→ 交给它，别插手；
+        #   ② 否则从指针下的控件沿 `master` 链往上找**第一个能滚的视口**并滚它；
+        #   ③ 一个都滚不动 → 什么都不做（不再有"有的地方能滚有的不能"）。
+        def _wheel_router(event):
+            w = getattr(event, "widget", None)
+            try:
+                import tkinter as _tk
+                if isinstance(w, (_tk.Text, _tk.Listbox)) or getattr(w, "_ctree", None):
+                    return None                       # 内层自己滚
+            except Exception:
+                pass
+            depth = 0
+            while w is not None and depth < 60:
+                fn = getattr(w, "try_scroll", None)
+                if callable(fn):
+                    try:
+                        if fn(event):
+                            return "break"
+                    except Exception:
+                        pass
+                w = getattr(w, "master", None)
+                depth += 1
+            return None
+
+        root.bind("<MouseWheel>", _wheel_router, add="+")
         nb = ttk.Notebook(nb_box)
         nb.pack(fill="both", expand=True)
         log_lf = ttk.LabelFrame(nb_paned, text="日志", padding=4)

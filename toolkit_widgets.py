@@ -849,6 +849,26 @@ class ScrollViewport(ttk.Frame):
         except Exception:
             pass
 
+    def try_scroll(self, event):
+        """给**全局滚轮路由**调用：能滚就滚、返回 True；滚不动返回 False。
+
+        为什么需要它（用户口径 2026-09-13："窗口内还是不能滚轮操控"）：
+        Tk 的滚轮只送到"指针下那个控件"的 bindtags（控件 → 类 → **顶层** → all），
+        而面板内部的视口 canvas **不在**那条链上 —— 于是面板自己的视口永远收不到滚轮，
+        只剩顶层那一个处理器在工作。正确做法不是给每个控件各绑一次，而是
+        **一个路由**：从 `event.widget` 沿 `master` 链往上找第一个能滚的视口（见
+        `stalker_toolkit` 里的 `_wheel_router`）。
+        """
+        try:
+            before = self.canvas.yview()
+            if before == (0.0, 1.0):
+                return False                      # 装得下
+            step = -1 if getattr(event, "delta", 0) > 0 else 1
+            self.canvas.yview_scroll(step * 3, "units")
+            return self.canvas.yview() != before
+        except Exception:
+            return False
+
     def scroll_wheel(self, event):
         """视口滚轮：**能滚才吃掉事件**，滚不动就放行（统一规则，与内层控件一致）。
 
