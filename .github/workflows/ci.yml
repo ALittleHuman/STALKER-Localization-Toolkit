@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  core:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 这些是**质量闸门自己的依赖**，不是应用的依赖：
+      #   pyflakes —— 未定义名 / 未用导入；不装的话 run_ci 里那一步会 SKIP，
+      #               于是"没告警"和"没检查"看起来一样（曾是假绿）。
+      #   chardet  —— toolkit_textio.sniff_encoding 的统计探测；
+      #               不装的话相关断言会 SKIP。
+      - name: Install gate dependencies
+        run: python -m pip install --disable-pip-version-check pyflakes chardet
+
+      - name: Run automated regression
+        shell: pwsh
+        run: python run_ci.py --fast
