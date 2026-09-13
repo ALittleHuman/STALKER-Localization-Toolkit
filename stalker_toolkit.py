@@ -227,14 +227,27 @@ if __name__ == "__main__":
         mainloop 尽早跑起来；切主题 / 将来重建界面用 `defer_rest=False`（一次性
         装完，与旧实现一致）。注意 `apply_theme()` 由 on_done 在**全部装完后**
         调用一次 —— 它要配约 100 条 ttk 样式，绝不能进装配循环。
+
+        **标签条一次建齐**（用户口径 2026-09-13："以秒计，是刚启动的时候，顶上的栏弹出。"）：
+        原来标签是"每装完一个栏目才 `nb.add()`"，六个栏目的内容要 2 秒多才装完 ——
+        用户看到的就是**顶部标签一个一个往外弹**，持续以秒计。现在先给每个栏目建一个
+        **空标签**（标签条瞬间完整），内容再分帧填进对应的标签里。
         """
         for tab in nb.tabs():
             nb.forget(tab)
         apps.clear()
-
-        def _build_one(label, factory):
+        tabs_by_label = {}
+        for label, _factory in TOOLS:
             tab = tk.Frame(nb, bg=color("bg"))
             nb.add(tab, text=label)
+            tabs_by_label[label] = tab
+
+        def _build_one(label, factory):
+            tab = tabs_by_label.get(label)
+            if tab is None:                     # 兜底：TOOLS 之外临时加的栏目
+                tab = tk.Frame(nb, bg=color("bg"))
+                nb.add(tab, text=label)
+                tabs_by_label[label] = tab
             # **滚动发生在页面内部，标签条钉住不动**（2026-09-13 实机录屏抓到的结构错误）：
             # 原来把整个 Notebook（含标签条）塞进一个滚动视口 —— 页面一滚，**标签条也被滚走**，
             # 主导航消失。现在改成：标签条属于 Notebook（固定），每个栏目页自己是一个
