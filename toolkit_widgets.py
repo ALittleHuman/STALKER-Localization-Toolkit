@@ -847,11 +847,20 @@ class ScrollViewport(ttk.Frame):
         self.hbar = (AutoScrollbar(self, orient="horizontal", command=self.canvas.xview)
                      if self._horizontal else None)
         self.canvas.configure(yscrollcommand=self.vbar.set)
+        # ★滚动条一律用 **place 显式定位**，不用 pack。
+        # 为什么（2026-09-13 实测，用户："我横向滚动条呢？我正常的大滚动条呢？"）：
+        #   pack 按顺序分配空间，画布是 `expand=True`；滚动条被自动隐藏过再放回来时
+        #   空间已经被画布吃掉 → 实测 `manager=pack 宽=1 高=1 可见=0`
+        #   —— 滚动条"存在"却根本看不见（我上一版审计只查了 manager，于是假阳性）。
+        #   place 不参与空间分配、也不受顺序影响；隐藏/放回就是 place_forget / place(**kw)，
+        #   与 AutoScrollbar 已有的 `_geom` 机制天然吻合。
+        self._bar = max(10, px(10))          # 滚动条厚度（设计值 10px × 缩放）
         if self.hbar is not None:
             self.canvas.configure(xscrollcommand=self.hbar.set)
-            self.hbar.pack(side="bottom", fill="x")
-        self.vbar.pack(side="right", fill="y")
-        self.canvas.pack(side="left", fill="both", expand=True)
+            self.hbar.place(x=0, rely=1.0, anchor="sw", relwidth=1.0, height=self._bar)
+        self.vbar.place(relx=1.0, y=0, anchor="ne", relheight=1.0, width=self._bar)
+        self.canvas.place(x=0, y=0, relwidth=1.0, relheight=1.0)
+        self._bars_place = True
         self.content = tk.Frame(self.canvas, bg=color("bg"))
         self.content._scroll_viewport = self     # 主题切换遍历时能找回视口
         self._win = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
@@ -1025,11 +1034,22 @@ class AutoScrollbar(ttk.Scrollbar):
         self._geom = None          # ("pack"/"grid"/"place", kwargs) —— 调用方的布局参数
         self._visible = True
         self._needed = None
+        self._pack_before = None   # pack 放回来时要插在谁前面（见 pack/_show）
 
     # ── 记住调用方的布局参数（三种几何管理器都覆盖）────────────────────
     def pack(self, **kw):
         self._geom = ("pack", dict(kw))
-        return super().pack(**kw)
+        r = super().pack(**kw)
+        # ★记住**原来的顺序位置**：pack 是"先到先得"，放回来时若排到最后，
+        # 已经被 expand=True 的画布吃光空间 → 滚动条拿到 **0 尺寸**（存在但看不见）。
+        # 2026-09-13 用户实机："我横向滚动条呢？我正常的大滚动条呢？" —— 两个症状同因。
+        try:
+            slaves = list(self.master.pack_slaves())
+            i = slaves.index(self)
+            self._pack_before = slaves[i + 1] if i + 1 < len(slaves) else None
+        except Exception:
+            self._pack_before = None
+        return r
 
     def grid(self, **kw):
         self._geom = ("grid", dict(kw))
@@ -1095,7 +1115,13 @@ class AutoScrollbar(ttk.Scrollbar):
         kind, kw = self._geom
         try:
             if kind == "pack":
-                super().pack(**kw)      # 注意：pack 放回会排在末尾（调用方一般只放一个滚轴）
+                # **带 before 放回原位**（排到最后会被 expand=True 的画布挤成 0 尺寸 →
+                # 滚动条"存在但看不见"，这正是用户两次问的那件事）。
+                before = getattr(self, "_pack_before", None)
+                if before is not None and before.winfo_exists():
+                    super().pack(before=before, **kw)
+                else:
+                    super().pack(**kw)
             elif kind == "grid":
                 self.grid(**kw)
             else:
