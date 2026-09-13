@@ -9,7 +9,7 @@ from toolkit import (
     DND_FILES, errbox, log_summary, log_detail,
     plugin_slot_bar, plugin_entries, HOST_CONVERT, AREA_SOURCE_ENC,
     open_in_explorer, BACKUP_DIRNAME, BACKUP_SUFFIX, ENCODING_CHOICES,
-    color, tool_label, ScrollPanel,
+    color, tool_label, ScrollPanel, px,
 )
 
 # ═══ 自动检测：判定链只有一份实现（toolkit_textio.sniff_encoding） ═══
@@ -127,7 +127,8 @@ class ConvertApp(ttk.Frame):
         self._paned = SplitPane(self, orient="vertical")
         self._paned.pack(fill="both", expand=True, padx=PAD, pady=(2, 8))
         upper = ttk.Frame(self._paned)
-        lower = ttk.Frame(self._paned)
+        self._lower = ttk.Frame(self._paned)      # 下栏（进度）—— 空闲时整栏收掉
+        lower = self._lower
         self._paned.add(upper, weight=3)
         self._paned.add(lower, weight=1)
 
@@ -210,7 +211,7 @@ class ConvertApp(ttk.Frame):
         # 与 Hub 日志页的"导出"(导出日志)同名不同事，此处必须叫"导出统计"
         ttk.Button(btn_frame, text="导出统计", command=self.export_stats, width=8).pack(side="left", padx=4)
 
-        # ═══ 转换进度 (在下区, 日志上方) ═══
+        # ═══ 转换进度 (在下栏内；**空闲时整栏收掉**，任务开始再放出来) ═══
         prog_frame = self._panel(lower, "转换进度")
         self.prog_var = tk.DoubleVar()
         self.prog_bar = ttk.Progressbar(prog_frame, variable=self.prog_var, maximum=100)
@@ -219,6 +220,7 @@ class ConvertApp(ttk.Frame):
             prog_frame, text=_PROGRESS_TEXTS["convert"].format(done=0, total=0),
             style="Dim.TLabel")
         self.prog_label.pack(pady=(0, 6))
+        self._progress_panel(False)          # 启动即收起（空闲不占位）
 
         # 日志面板由 Hub 统一提供，工具内不再自建
 
@@ -342,12 +344,41 @@ class ConvertApp(ttk.Frame):
             return os.path.dirname(src)
         return src
 
+    def _progress_panel(self, show):
+        """"转换进度"那一栏**空闲时整栏收掉**（用户口径 2026-09-13）。
+
+        问题原话："我也不知道像编码转换这种东西，小窗口留那么大空是为什么。"
+        原因就是这里的下栏（weight 1）平时只有一个空的进度面板，却固定占 1/4 高度。
+        空闲 → 把 `lower` 从分栏里摘掉（上栏吃掉全部高度）；任务开始 → 按 weight 1 放回。
+        与"滚动条装得下就不常驻"同一条原则：**空着的东西不该占位**。
+        """
+        try:
+            pane = self._lower
+            if show:
+                if pane not in self._paned._panes():
+                    self._paned.add(pane, weight=1, minsize=px(90))
+            else:
+                if pane in self._paned._panes():
+                    self._paned._mins.pop(pane, None)
+                    self._paned.forget(pane)
+                try:
+                    self._paned._clamp()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def _set_progress(self, done, total, kind="convert"):
         """更新进度条与文案（投递回主线程）。分母是候选文件数口径。"""
+        self._progress_panel(True)          # 有任务 → 进度面板出现
         self._ui(self.prog_var.set, (done / total) * 100 if total else 0)
         text = _PROGRESS_TEXTS.get(kind, _PROGRESS_TEXTS["convert"]).format(
             done=done, total=total)
         self._ui(self.prog_label.config, text=text)
+
+    def _progress_done(self):
+        """任务收尾：进度面板收回（空闲不占位）。"""
+        self._progress_panel(False)
 
     def _finish_dialog(self, what, ok, failed, total):
         """完成弹窗按**实际成功/失败数**给结论（失败只进日志而弹窗恒报"完成"是缺陷）。"""
