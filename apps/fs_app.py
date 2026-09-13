@@ -218,15 +218,21 @@ class FSToolApp:
         outer.add(pan, weight=3, minsize=px(160))
         self._build_db_panel(pan)
         self._build_file_panel(pan)
+        # 两个面板的最小高度**由内容自己说**（`min_height()` = 面板里控件的自然高度），
+        # 并封顶在一个"够用就好"的值：于是窗格永远不小于面板的可用最小值 →
+        # 面板**自己的**滚动条（智能隐藏、就在面板底部/右侧）不会被窗格切掉；
+        # 面板比内容小时，由面板内部滚 —— 这正是"有东西显示不完全就出滚动条"。
+        for _p in (self.db_panel, self.file_panel):
+            pan.set_minsize(_p, min(_p.min_height(), px(200)))
         self._build_pack_panel(outer)
         # 日志面板由 Hub 统一提供，工具内不再自建
 
     def _build_db_panel(self, pan):
-        # 横向分栏的窗格走**裁剪式**：拖分隔条时这一侧的左边框不动、内容左对齐。
-        # 面板本身用统一的 `ScrollPanel`（2026-09-13）：**面板里有东西显示不完全**
-        # 就出它自己的滚动条（按钮行被遮住时能在面板底部横向滚，长列表能纵向滚）。
-        panel = ScrollPanel(pan.add_clipped(weight=1), "数据包列表（.db / .sq）")
-        panel.pack(fill="both", expand=True)
+        # 面板**直接当窗格**（不再套 add_clipped：那层裁剪会把面板底部切掉，
+        # 而横向滚动条恰好就在面板底部 —— 用户实测"按钮被遮住却没有滚动条"）。
+        # 面板自带横/纵滚动条（智能隐藏，出现条件 = 有东西显示不完全）。
+        panel = ScrollPanel(pan, "数据包列表（.db / .sq）")
+        pan.add(panel, weight=1)
         left = panel.body
         self.db_panel = panel
         bar = ttk.Frame(left); bar.pack(fill="x", pady=(0,2))
@@ -307,9 +313,9 @@ class FSToolApp:
                              command=lambda c=cb: invoke_plugin_callback(c, self))
 
     def _build_file_panel(self, pan):
-        # 同上：统一的 ScrollPanel（面板内部自己的滚动条，出现条件 = 有东西显示不完全）。
-        panel = ScrollPanel(pan.add_clipped(weight=2), "包内文件")
-        panel.pack(fill="both", expand=True)
+        # 同上：面板直接当窗格（不套裁剪层），自带智能隐藏的横/纵滚动条。
+        panel = ScrollPanel(pan, "包内文件")
+        pan.add(panel, weight=2)
         right = panel.body
         self.file_panel = panel
         bar = ttk.Frame(right); bar.pack(fill="x", pady=(0,2))

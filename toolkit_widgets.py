@@ -778,6 +778,38 @@ class ScrollPanel(ttk.LabelFrame):
         """内容变了（加/删控件、改文字）之后调用，让滚动条重新判断要不要出现。"""
         self.view._sync()
 
+    def min_height(self):
+        """**内容自己说需要多高**（= 面板里所有控件的自然高度之和）。
+
+        用途：面板当窗格用时，窗格的最小高度直接取这个值 —— 于是"窗格永远不小于面板
+        的需要"，面板底部那条横向滚动条不会被窗格切掉。
+        （2026-09-13 实测的正是这件事：面板需要 446、窗格只给 396 → 面板底部被裁，
+         而横向滚动条恰好就在面板底部 → 用户看到"按钮被遮住却没有滚动条"。）
+        """
+        try:
+            return self.body.winfo_reqheight() + self._pad_y()
+        except Exception:
+            return 0
+
+    def min_width(self):
+        """内容自己说需要多宽（同上，用于横向）。"""
+        try:
+            return self.body.winfo_reqwidth() + self._pad_x()
+        except Exception:
+            return 0
+
+    def _pad_y(self):
+        try:
+            return int(str(self.cget("padding")).split()[-1]) * 2
+        except Exception:
+            return 0
+
+    def _pad_x(self):
+        try:
+            return int(str(self.cget("padding")).split()[0]) * 2
+        except Exception:
+            return 0
+
     def recolor(self):
         self.view.recolor()
 
@@ -826,6 +858,22 @@ class ScrollViewport(ttk.Frame):
         # 内容自己变尺寸（加控件/换行）与视口变尺寸都要重算
         self.content.bind("<Configure>", lambda _e: self._sync(), add="+")
         self.canvas.bind("<Configure>", lambda _e: self._sync(), add="+")
+        # 再加一条"盯请求尺寸"的看门（见 _watch_req）：Tk 不会为"请求变了"发事件。
+        self._watch_after = None
+        try:
+            self.bind("<Destroy>", lambda _e: self._stop_watch(), add="+")
+            self._watch_after = self.after(250, self._watch_req)
+        except Exception:
+            self._watch_after = None
+
+    def _stop_watch(self):
+        h = getattr(self, "_watch_after", None)
+        if h is not None:
+            try:
+                self.after_cancel(h)
+            except Exception:
+                pass
+            self._watch_after = None
 
     def _sync(self):
         """把内容窗口的尺寸与 scrollregion 对齐到"视口 ∪ 显式最小尺寸"。
@@ -850,8 +898,41 @@ class ScrollViewport(ttk.Frame):
                 need_w = max(self.content.winfo_reqwidth(), self._min_x, vw)
             self.canvas.itemconfigure(self._win, width=need_w, height=need_h)
             self.canvas.configure(scrollregion=(0, 0, need_w, need_h))
+            # ★**自校正**：往内容里加控件改变的是它的"请求尺寸"，而**不改变它的实际尺寸**
+            # —— Tk 因此不发 `<Configure>`，`_sync` 不会再来一次，视口就永远停在
+            # "装得下"的旧判断上：内容被裁、滚动条却不出现（2026-09-13 真页面审计实测：
+            # "可视 675x396 | 内容需要 581x446 | 纵裁=True | vbar=False"）。
+            # 这里记下上次用过的请求尺寸；一旦发现变了，就在下一轮空闲再算一次。
+            req = (self.content.winfo_reqwidth(), self.content.winfo_reqheight())
+            if req != getattr(self, "_last_req", None):
+                self._last_req = req
+                try:
+                    self.after_idle(self._sync)
+                except Exception:
+                    pass
         except Exception:
             pass
+
+    def _watch_req(self):
+        """盯着内容的"请求尺寸"：变了就重算一次（这是**唯一**可靠的触发点）。
+
+        为什么必须盯（2026-09-13 真页面审计实测）：
+          "可视 675x396 | 内容需要 446 | yview=(0.0, 1.0) | vbar.needed=False"
+        —— 往面板里 `pack` 控件只改变内容的**请求尺寸**，内容**实际尺寸不变**，
+        Tk 因此**不发 `<Configure>`**；`_sync` 只在尺寸事件里跑，于是永远停在
+        "装得下"的旧判断上：内容被裁、滚动条不出现（用户："完全没用"）。
+        每 250 ms 比一次尺寸（就是读两个整数），代价可以忽略；销毁时自动停。
+        """
+        try:
+            if not self.winfo_exists():
+                return
+            req = (self.content.winfo_reqwidth(), self.content.winfo_reqheight())
+            if req != getattr(self, "_last_req", None):
+                self._last_req = req
+                self._sync()
+            self._watch_after = self.after(250, self._watch_req)
+        except Exception:
+            self._watch_after = None
 
     def try_scroll(self, event):
         """给**全局滚轮路由**调用：能滚就滚、返回 True；滚不动返回 False。
@@ -2233,6 +2314,19 @@ class SplitPane(ttk.Panedwindow):
         self.refresh_children()      # 自绘控件（CanvasTree）补一次重绘
         self._clamp()
         return "break"
+
+    def set_minsize(self, pane, minsize):
+        """运行期更新某一栏的最小值（内容建完之后再按"内容自己说需要多大"设定）。
+
+        为什么需要它：`ScrollPanel.min_height()` 只有在**内容建完之后**才有意义，
+        而 `add(..., minsize=...)` 往往在内容之前调用。有了这个方法，页面就能按顺序写：
+        建面板 → 建内容 → `set_minsize(panel, panel.min_height())`。
+        """
+        try:
+            self._mins[self._nametowidget(pane)] = int(minsize)
+        except Exception:
+            self._mins[pane] = int(minsize)
+        self._clamp()
 
     def refresh_children(self):
         """Force child widgets to redraw/refresh after a sash drag.
