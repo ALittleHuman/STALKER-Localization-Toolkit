@@ -315,17 +315,17 @@ if __name__ == "__main__":
         # Tk 只把滚轮送到"指针下那个控件"的 bindtags（控件 → 类 → 顶层 → all）；
         # 面板/页面内部的视口 canvas **不在**那条链上，所以给"顶层绑一个处理器"这种
         # 做法只能滚到最外层那一个视口。这里改成**一条路由**：
-        #   ① 指针下是内层自己能滚的控件（文本框 / 列表 / 树）→ 交给它，别插手；
-        #   ② 否则从指针下的控件沿 `master` 链往上找**第一个能滚的视口**并滚它；
-        #   ③ 一个都滚不动 → 什么都不做（不再有"有的地方能滚有的不能"）。
+        #   ① 从指针下的控件沿 `master` 链往上找**第一个能滚的视口**并滚它；
+        #   ② 一个都滚不动 → 什么都不做（不再有"有的地方能滚有的不能"）。
+        #
+        # ★**删掉了"指针下是 Text/Listbox/树就整体跳过"那一支** —— 它正是用户报的
+        #   "小滚动条隐藏时大滚动条滚不动"的原因：那类控件由 Tk 自己的类绑定处理，
+        #   **能滚时它会 break，事件根本到不了这里**；而它**滚不动时不会 break**，
+        #   事件继续冒泡到这里，我却因为它"是内层可滚控件"直接 return None →
+        #   整页也就跟着不滚了。正确做法是**不跳过**：能滚的内层已经自己吃掉了，
+        #   轮到这里就说明内层滚不动，该由外层视口接手。
         def _wheel_router(event):
             w = getattr(event, "widget", None)
-            try:
-                import tkinter as _tk
-                if isinstance(w, (_tk.Text, _tk.Listbox)) or getattr(w, "_ctree", None):
-                    return None                       # 内层自己滚
-            except Exception:
-                pass
             depth = 0
             while w is not None and depth < 60:
                 fn = getattr(w, "try_scroll", None)
@@ -421,7 +421,36 @@ if __name__ == "__main__":
         paint_now(root)
         # 首个栏目同步装，其余分帧（见 build_tabs）：mainloop 因此早约 1.2 s 跑起来，
         # 窗口不再是"画出来了但点不动"。
-        sync_done, rest = rebuild(nb, apps, on_done_extra=busy.stop)
+        # ── 启动期把窗口**藏起来装**，装完再露出来 ─────────────────────────
+        # 用户口径 2026-09-13："转圈的动画为什么不是拿来隐藏逐个加载控件的过程，
+        # 而是让工具看起来更卡。" —— 一针见血：栏目是分帧装的（每帧一个），装配会
+        # 卡住事件循环 → 转圈**冻在原处不动**，而窗口已经露在外面、用户同时看着
+        # "半个界面 + 一个不动的圈" → 观感就是"更卡"。
+        # 正解不是让圈转得更顺，而是**根本别让用户看到装配过程**：
+        #   * 装配期间 `withdraw()`（窗口不显示），装完在 on_done 里 `deiconify()`；
+        #   * 遮罩保留（它挡住"露出来那一瞬间"仍可能未画完的控件），但用户几乎看不到它。
+        # 兜底：看门狗那 20 s 之外再加一条"装配失败也必须露出来"，绝不会把窗口留在隐藏态。
+        was_visible = bool(root.winfo_viewable())
+        hidden_for_boot = False
+        if was_visible and len(TOOLS) > 1:      # 有分帧装配才需要藏（否则装完即显示）
+            try:
+                root.withdraw()
+                hidden_for_boot = True
+            except Exception:
+                hidden_for_boot = False
+
+        def _reveal():
+            busy.stop()
+            if hidden_for_boot:
+                try:
+                    root.deiconify()
+                    root.lift()
+                except Exception:
+                    pass
+
+        sync_done, rest = rebuild(nb, apps, on_done_extra=_reveal)
+        if hidden_for_boot and not rest:
+            _reveal()
         log_detail("首个栏目已就绪（%s），其余 %d 个分帧装配"
                    % ("、".join(sync_done), rest))
 
