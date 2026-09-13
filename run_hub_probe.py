@@ -865,17 +865,25 @@ def main():
         check("AST：Hub 建了加载遮罩，且把收尾（stop）挂进装配 on_done", _busy_wired)
 
         def _hub_layout_wiring():
+            """AST：栏目页**必须**向上传递高度；两栏都要有 minsize。
+
+            2026-09-13 反转（用户实机："这些地方应该出现滚动条"）：原来这里锁的是
+            "必须关 pack_propagate"（因为页面请求高度会把日志栏压成 1px）。现在栏目区
+            pane 是 fit="content" 的裁剪视口 —— 页面说出自己的高度，视口据此决定要不要出
+            纵向滚动条；**关掉** propagate 会让页面请求高度变成 1px，于是页面被裁却
+            **没有滚动条**（用户圈出的右侧空条）。
+            """
             import ast
             tree = _hub_ast()
-            propagates = False
+            disables = []
             minsizes = []
             for node in ast.walk(tree):
                 if isinstance(node, ast.FunctionDef) and node.name == "_build_one":
                     for n in ast.walk(node):
-                        if isinstance(n, ast.Call):
-                            nm = getattr(n.func, "attr", None)
-                            if nm == "pack_propagate":
-                                propagates = True
+                        if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "pack_propagate":
+                            for arg in n.args:
+                                if getattr(arg, "value", True) is False:
+                                    disables.append(n.lineno)
                 if isinstance(node, ast.FunctionDef) and node.name == "build_hub":
                     for n in ast.walk(node):
                         # 栏目区那条走 `add_clipped(..., minsize=)`，日志栏走 `add(..., minsize=)`
@@ -884,12 +892,14 @@ def main():
                             for kw in n.keywords:
                                 if kw.arg == "minsize":
                                     minsizes.append(kw.value)
-            assert propagates, \
-                "栏目页没关 pack_propagate：页面请求高度会顶大 Notebook，日志栏被压成 1 px"
+            assert not disables, \
+                "栏目页又被 pack_propagate(False) 关掉了高度传递（第 %r 行）：页面请求高度会是 " \
+                "1px，栏目区视口就以为装得下 → 页面被裁却没有滚动条" % (disables,)
             assert len(minsizes) >= 2, \
                 "Hub 两栏都要给 minsize（栏目区/日志栏各一），实际 %d 处" % len(minsizes)
             return True
-        check("AST：栏目页不顶高 Notebook，且两栏都有 minsize", _hub_layout_wiring)
+        check("AST：栏目页向上传递高度（不再关 pack_propagate）+ 两栏都有 minsize",
+              _hub_layout_wiring)
 
         # ── [8] 自动隐藏滚动条（用户口径：装得下就不该常驻）──────────────────
         print("\n[8] 自动隐藏滚动条（AutoScrollbar：装得下收起、超出才出现、收起时让出空间）")

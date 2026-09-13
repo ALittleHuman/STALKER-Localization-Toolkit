@@ -226,13 +226,12 @@ if __name__ == "__main__":
 
         def _build_one(label, factory):
             tab = tk.Frame(nb, bg=color("bg"))
-            # 栏目页**不参与** Notebook 的请求尺寸（pack_propagate(False)）：
-            # 页面里是表单 + 两三个 CanvasTree，请求高度合计 900+ px；参与的话
-            # Notebook 的请求高度就超过窗口，ttk.Panedwindow 只能把最后一个 pane
-            # （日志栏）压成 1 px —— 实测 1024x700 / 1280x860 / 1440x900 下日志栏
-            # 分别只有 1 / 1 / 4 px（见 UI 回执的布局体检）。页面照旧铺满 Notebook
-            # 客户区，只是"由窗格分配高度"而不是"由内容顶高"。
-            tab.pack_propagate(False)
+            # **不再关 pack_propagate**（2026-09-13 反转，用户："这些地方应该出现滚动条"）。
+            # 原来关掉是因为：页面请求高度合计 900+，会把 Notebook 顶高、把日志栏压成 1px。
+            # 现在栏目区 pane 已经是**自己会滚的裁剪视口**（fit="content"），顶高不再伤日志栏：
+            # 页面说出自己需要多高 → 视口据此决定"要不要出纵向滚动条"。
+            # 反过来，关掉 propagate 时页面请求高度是 **1px**，视口就以为"内容装得下" ——
+            # 于是页面被裁掉一截却**连一条滚动条都没有**（用户实机截图圈出的右侧空条）。
             nb.add(tab, text=label)
             try:
                 apps[label] = factory(tab)

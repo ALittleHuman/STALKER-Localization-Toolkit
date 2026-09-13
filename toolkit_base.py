@@ -24,7 +24,7 @@ APP_NAME = "STALKER Localization Toolkit"
 # 标记就重置成"无"，产物名与界面会对不上。用构建器或 `build.py --prerelease`
 # 改一次就会写回这一行；清空写成 "" 即"无标记"。
 APP_VERSION = "1.1.0"
-APP_PRERELEASE = "ALPHA.12"
+APP_PRERELEASE = "ALPHA.13"
 
 # 构建计数也放这里 —— 用户明确要求："还有 build 计数也放这里好了"。
 # 为什么同一处：版本号 / 标记 / 产物编号 / 标记序号**都是同一次构建的状态**，
@@ -41,8 +41,8 @@ APP_PRERELEASE = "ALPHA.12"
 #                       如 {"1.0.1|ALPHA": 3}。{} = 还没自动数过：此时以
 #                       APP_PRERELEASE 里已写着的序号为下限继续（只增不减），
 #                       因此这一行清空也不会让序号倒退回已发布过的号。
-BUILD_COUNT = 24
-PRERELEASE_COUNTS = {"1.0.1|ALPHA": 9, "1.1.0|ALPHA": 12}
+BUILD_COUNT = 25
+PRERELEASE_COUNTS = {"1.0.1|ALPHA": 9, "1.1.0|ALPHA": 13}
 
 
 # `app_dir` 不再是本模块的定义，而是上面的 re-export（实现搬到 Tk 无关的
