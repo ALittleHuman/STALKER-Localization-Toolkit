@@ -408,12 +408,19 @@ api.register_compare_mode(
 | 成员 | 说明 |
 |---|---|
 | `api.backend` | `"tk"`（当前发行版）或 `"qt"`（试点）。**通常不需要分支** —— 用 `api.ui` 写的插件两边通用 |
-| `api.ui` | 控件工厂，方法面固定 **14 个**（下表） |
+| `api.ui` | 控件工厂，方法面固定 **16 个**（下表） |
 
 | 类别 | 方法 |
 |---|---|
-| 造控件（8） | `label(parent, text, style=None)`、`button(parent, text, on_click=None, width=None, style=None, state=None)`、`row(parent, …)`（竖直容器）、`checkbox(parent, text, variable=None, on_toggle=None)`、`entry(parent, textvariable=None, width=None, show=None)`、`text(parent, height=6, width=None, wrap="word")`、`combo(parent, values=(), variable=None, width=None, on_change=None)`、`pack(widget, side="top", fill="x", expand=False, padx=0, pady=0, anchor=None)` |
-| 改控件 / 取用户输入（6） | `set_text(widget, text)`、`text_view(parent, height=12, mono=True)`（返回带 `set_text/clear/alive/get_text` 与 `.widget` 的**只读**视图）、`alive(widget)`、`ask_yes_no(parent, title, message)`、`ask_open_file(parent, title, filetypes=None, initialdir="")`、`ask_save_file(parent, title, initialdir="", initialfile="", filetypes=None)` |
+| 造控件（9） | `label(parent, text, style=None)`、`button(parent, text, on_click=None, width=None, style=None, state=None)`、`row(parent, …)`（竖直容器）、`checkbox(parent, text, variable=None, on_toggle=None)`、`entry(parent, textvariable=None, width=None, show=None)`、`text(parent, height=6, width=None, wrap="word")`、`combo(parent, values=(), variable=None, width=None, on_change=None)`、`drop_box(parent, on_file=None, placeholder="", width=None)`（只读**拖入**框，见下）、`pack(widget, side="top", fill="x", expand=False, padx=0, pady=0, anchor=None)` |
+| 改控件 / 取用户输入（7） | `set_text(widget, text)`、`set_state(widget, state)`（`"disabled"` / `"normal"`，置灰用）、`text_view(parent, height=12, mono=True)`（返回带 `set_text/clear/alive/get_text` 与 `.widget` 的**只读**视图）、`alive(widget)`、`ask_yes_no(parent, title, message)`、`ask_open_file(parent, title, filetypes=None, initialdir="")`、`ask_save_file(parent, title, initialdir="", initialfile="", filetypes=None)` |
+
+`drop_box` 返回的小对象与 `text_view` 同一套路：`set_text / get_text / clear / alive` + `.widget`
+（供 `ui.pack` 布局）。它**只负责显示与接收拖入**，不给键盘输入 —— 对应"一个框 + 几个按钮"的形态：
+点按钮才弹选文件窗口，拖入等价于点那个按钮。两个后端都**真接拖拽**（Tk: tkinterdnd2；
+Qt: 只读 `QLineEdit` + `dragEnterEvent/dropEvent`）；拿不到 tkinterdnd2 时 Tk 侧静默退化为"只能显示"。
+`set_state` 用于"没有目标就把它灰掉"这类运行期状态：插件不必（也不许）自己
+`configure(state=...)`，Qt 侧没有那个写法。
 
 **两条必须知道的语义**（两条都写进了注入验证过的锁）：
 
@@ -430,16 +437,29 @@ def register(api):
 
 def build(api, parent):
     ui = api.ui
+    st = {"path": ""}
+
+    def on_drop(path):                     # 拖入 = 设目标 + 立即识别（不弹选文件窗口）
+        st["path"] = path
+        run_identify(path)
+
+    def sync():                            # 没有目标就把"生成"灰掉
+        ui.set_state(btn_apply, "normal" if st["path"] else "disabled")
+
     wrap = ui.row(parent)
     row = ui.row(wrap)
-    for text, op in (("识别", "identify"), ("校验", "verify")):
-        ui.pack(ui.button(row, text, on_click=lambda o=op: run(o)), side="left", padx=(0, 6))
-    path_label = ui.label(wrap, "未选择文件")
-    ui.pack(path_label, fill="none", anchor="w", pady=(4, 0))
+    box = ui.drop_box(row, on_file=on_drop,
+                      placeholder="拖入 xrEngine.exe，或点『识别』选择")
+    ui.pack(box.widget, side="left", fill="x", expand=True, padx=(0, 6))
+    ui.pack(ui.button(row, "识别", on_click=pick_then_identify), side="left", padx=(0, 6))
+    btn_apply = ui.button(row, "生成", on_click=generate, state="disabled")
+    ui.pack(btn_apply, side="left", padx=(0, 6))
+    ui.pack(ui.button(row, "清空", on_click=clear_all), side="left")
     view = ui.text_view(wrap, height=12)
     ui.pack(view.widget, fill="x", pady=(4, 0))
-    # 之后随时：ui.set_text(path_label, p) / view.set_text(报告) / view.clear() / view.alive()
+    sync()                                 # 新面板按当前状态初始化
     return getattr(wrap, "widget", wrap)
+    # 之后随时：ui.set_text(...) / box.set_text(p) / view.set_text(报告) / view.clear()
 ```
 
 `text_view` 返回值是**小对象**而不是裸控件：只读视图的写入通道就是 `set_text/clear`，
@@ -449,6 +469,8 @@ def build(api, parent):
 **实测迁移成本**（`plugins/engine_utf8_patch.py`，基线是迁移前的发行副本）：
 1470 → 1452 行，9 处 Tk 控件构造 + 25 处布局/改控件调用 + 3 处对话框调用 + 1 个 Tk 专有辅助函数
 → **16 处 `api.ui` 调用**；面板结构与注册点一个都没动（`run_ext_probe` 的 10 条锁前后同一条不变）。
+（**2026-09-13 的面板改造**是有意改结构与注册点的：动作区去重、去掉『校验』按钮、加目标拖入框，
+并把方法面从 14 扩到 16 —— 那次的锁是**有意改写并逐条写了理由**的，见 `ARCHITECTURE.md` §11.4。）
 
 ## 4. 兼容旧式插件
 

@@ -1252,16 +1252,39 @@ def main():
               lambda: _cp["content_w"] == _cp["pane_w"])
 
         def _pages_use_clipped():
-            """源码锁：两个横向分栏的页面都必须用 add_clipped（漏一个那处就还是老行为）。"""
-            bad = []
-            for f in ("fs_app.py", "font_pack_app.py"):
+            """源码锁（AST，**抗注释**）：横向分栏的裁剪口径必须各就各位。
+
+            口径（2026-09-14 收拢）：
+              * `font_pack_app.py`：内容区要 `add_clipped`（横向分栏、内容可能超宽）；
+              * `fs_app.py`：**不**用 `add_clipped` —— 面板（`ScrollPanel`）自带横/纵
+                滚动条，再套一层裁剪会把面板底部连滚动条一起切掉（用户实测
+                "按钮被遮住却没有滚动条"），所以它直接 `pan.add(panel)`。
+
+            ★ 这条锁原先按**字符串**查（`"add_clipped" not in src`）—— 而 fs_app 里
+              `add_clipped` 恰好只出现在**解释"为什么不用它"的注释**里，于是锁被注释
+              喂饱、永远为真。改成按 AST 数**真实调用点**，两边的期望值分开写死。
+            """
+            import ast
+            # 文件 -> (最少调用点, 最多调用点)；None = 不限上限
+            want = {"fs_app.py": (0, 0), "font_pack_app.py": (1, None)}
+            got, bad = {}, {}
+            for f, (lo, hi) in want.items():
                 src = io.open(os.path.join(BASE, "apps", f), encoding="utf-8").read()
-                if "add_clipped" not in src:
-                    bad.append(f)
-            return bad
-        _pc = _pages_use_clipped()
-        print("        仍用旧式 add() 的横向分栏页面：%r" % (_pc,))
-        check("收敛：所有横向分栏页面都用 add_clipped（fs / font）", lambda: not _pc)
+                n = 0
+                for node in ast.walk(ast.parse(src)):
+                    if (isinstance(node, ast.Call)
+                            and isinstance(node.func, ast.Attribute)
+                            and node.func.attr == "add_clipped"):
+                        n += 1
+                got[f] = n
+                if n < lo or (hi is not None and n > hi):
+                    bad[f] = n
+            return got, bad
+        _pc_got, _pc_bad = _pages_use_clipped()
+        print("        横向分栏页面的 add_clipped 真实调用点：%r（不合口径：%r）"
+              % (_pc_got, _pc_bad))
+        check("收敛：横向分栏口径各就各位（fs 面板直接当窗格 0 处；font 内容区 ≥1 处）",
+              lambda: not _pc_bad)
 
         # ── 回归：sash 落点越界会把**所有** pane 压成 1px（实机抓到的塌陷）──
         def _no_collapse_when_tight():

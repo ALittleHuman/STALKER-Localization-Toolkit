@@ -20,21 +20,26 @@
 这样插件**只写一遍**，宿主换后端时插件不用改（`api.backend == "qt"` 时由 Qt 实现提供同一套方法）。
 
 接口刻意保持最小：只覆盖插件面板/栏目真正需要的东西（标签、按钮、行容器、勾选框、单行输入、
-多行文本、下拉），不试图复刻整套 Tk。**没有**放进来的东西（例如 `CanvasTree`）属于宿主内部件，
+多行文本、下拉、只读拖入框、置灰），不试图复刻整套 Tk。**没有**放进来的东西（例如 `CanvasTree`）属于宿主内部件，
 插件要树就应通过宿主提供的专用 API，而不是自己造控件 —— 这条边界写在这里，免得以后又长回去。
 """
+import os
 import tkinter as tk
 from tkinter import ttk
 
-__all__ = ["TkUiFactory", "TkTextView", "UI_METHODS"]
+__all__ = ["TkUiFactory", "TkTextView", "TkDropBox", "UI_METHODS"]
 
 # 后端必须实现的同一套方法（探针按这份清单核对 Tk / Qt 两侧一致）。
-# 前 8 个是"造控件"，后 6 个是"改控件 / 拿用户输入" —— 后者是迁移
+# 前 9 个是"造控件"，后 7 个是"改控件 / 拿用户输入" —— 后者是迁移
 # `engine_utf8_patch` 时按实测补上的：插件真正需要的不只是造控件，还要
-# 改标签文字、往只读文本视图里写报告、判控件是否还活着、以及三个标准对话框。
-UI_METHODS = ("label", "button", "row", "checkbox", "entry", "text", "combo", "pack",
-              "set_text", "text_view", "alive", "ask_yes_no", "ask_open_file",
-              "ask_save_file")
+# 改标签文字、往只读文本视图里写报告、判控件是否还活着、以及三个标准对话框；
+# 再后来（面板 UI 三件）又补了两个：`drop_box`（只读的拖入目标框 ——
+# 用户口径是"点『识别』才弹选文件窗口，框只显示与接收拖入"）与
+# `set_state`（无目标时把"生成"置灰）。
+UI_METHODS = ("label", "button", "row", "checkbox", "entry", "text", "combo",
+              "drop_box", "pack",
+              "set_text", "set_state", "text_view", "alive",
+              "ask_yes_no", "ask_open_file", "ask_save_file")
 
 
 class TkTextView:
@@ -70,6 +75,45 @@ class TkTextView:
             return self.text.get("1.0", "end-1c")
         except Exception:
             return ""
+
+
+class TkDropBox:
+    """只读的"拖入目标"显示框（Tk 实现：Label + 边框 + tkinterdnd2）。
+
+    为什么是只读的：用户口径是"点『识别』才会跳出选文件的窗口"，所以这个框
+    **只负责显示与接收拖入**，不提供键盘输入 —— 形态就是"一个框 + 几个按钮"。
+    与 `TkTextView` 同一套路：插件拿到的不是裸控件，而是
+    `set_text / get_text / clear / alive` + `.widget`（供 `ui.pack` 布局）。
+    拿不到 tkinterdnd2 时静默退化为"只能显示"：不崩、不报错、不影响按钮路径。
+    """
+
+    def __init__(self, label, placeholder=""):
+        self.widget = label
+        self._placeholder = str(placeholder or "")
+
+    def set_text(self, s):
+        s = str(s or "")
+        try:
+            self.widget.configure(text=s if s else self._placeholder)
+            return True
+        except Exception:
+            return False
+
+    def get_text(self):
+        try:
+            t = str(self.widget.cget("text"))
+        except Exception:
+            return ""
+        return "" if t == self._placeholder else t
+
+    def clear(self):
+        return self.set_text("")
+
+    def alive(self):
+        try:
+            return bool(self.widget.winfo_exists())
+        except Exception:
+            return False
 
 
 class TkUiFactory:
@@ -149,6 +193,45 @@ class TkUiFactory:
             kw["width"] = width
         return tk.Text(parent, **kw)
 
+    def drop_box(self, parent, on_file=None, placeholder="", width=None):
+        """只读的"拖入目标"显示框：拖入文件时回调 `on_file(path)`。
+
+        拖拽实现与解包页 / 视频页**同源**（都是 tkinterdnd2 的 `DND_Files` +
+        同一套花括号剥离），但实现在框架侧 —— 插件因此不用 import tkinter，
+        `run_inject_layout_locks.py` 那条"插件里已无 Tk 构造/对话框"的锁才守得住。
+        `width` 在 Tk 侧只是建议宽度（布局由 pack 决定），保留参数是为了与 Qt 同参。
+        """
+        kw = {"anchor": "w", "text": str(placeholder or ""),
+              "relief": "flat", "bd": 0, "highlightthickness": 1,
+              "padx": 6, "pady": 4}
+        for role, key in (("entry_bg", "bg"), ("text_dim", "fg"),
+                          ("border", "highlightbackground"),
+                          ("accent", "highlightcolor")):
+            v = self._role(role)
+            if v:
+                kw[key] = v
+        fam = self._role("font")
+        if fam:
+            kw["font"] = fam
+        w = tk.Label(parent, **kw)
+        if width is not None:
+            try:
+                w.configure(wraplength=int(width) * 8)
+            except Exception:
+                pass
+        if on_file is not None:
+            def _drop(e):
+                path = str(getattr(e, "data", "") or "").strip().strip("{}").strip()
+                if path and os.path.isfile(path):
+                    on_file(path)
+            try:
+                if hasattr(w, "drop_target_register"):
+                    w.drop_target_register("DND_Files")
+                    w.dnd_bind("<<Drop>>", _drop)
+            except Exception:
+                pass
+        return TkDropBox(w, placeholder)
+
     def combo(self, parent, values=(), variable=None, width=None, on_change=None):
         kw = {"values": list(values)}
         if variable is not None:
@@ -167,6 +250,19 @@ class TkUiFactory:
         """设置标签文字（Tk: `configure(text=)`；Qt: `setText`）。"""
         try:
             widget.configure(text=str(text))
+            return True
+        except Exception:
+            return False
+
+    def set_state(self, widget, state):
+        """把控件置灰 / 恢复（`state="disabled"` / `"normal"`）。
+
+        为什么需要它：面板的"生成"在没有目标时必须**真的点不动**（用户口径
+        "如果没有文件就把其他几个按钮灰掉"），而按钮是在建面板时造好的 ——
+        没有这个入口，插件就只能去 `configure(state=...)`（Qt 侧没有这个写法）。
+        """
+        try:
+            widget.configure(state="disabled" if state == "disabled" else "normal")
             return True
         except Exception:
             return False

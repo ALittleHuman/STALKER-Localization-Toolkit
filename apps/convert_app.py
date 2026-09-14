@@ -9,7 +9,7 @@ from toolkit import (
     DND_FILES, errbox, log_summary, log_detail,
     plugin_slot_bar, plugin_entries, HOST_CONVERT, AREA_SOURCE_ENC,
     open_in_explorer, BACKUP_DIRNAME, BACKUP_SUFFIX, ENCODING_CHOICES,
-    color, tool_label, ScrollPanel, px,
+    color, tool_label, ScrollPanel, px, TaskRunner,
 )
 
 # ═══ 自动检测：判定链只有一份实现（toolkit_textio.sniff_encoding） ═══
@@ -84,9 +84,9 @@ class ConvertApp(ttk.Frame):
         self._ui = _make_pump(self.root)
 
         # ═══ 任务级运行状态（转换 / 恢复备份 / 清空备份 三者互斥） ═══
-        # running 只在主线程同步置位：按钮禁用是投递到主线程的（最多 30ms 才生效），
-        # 单靠按钮状态挡不住连点，标志位才是真正的重入闸门。
-        self.running = False
+        # running 标志 / 忙碌 UI / 线程 / 失败路径**统一归 `self.task`（Toolkit 的
+        # TaskRunner）**，见 __init__ 末尾的创建处 —— 本 App 不再另养一份。
+        # 这里只额外记住"谁在跑"：拒绝第二个任务时要说人话（见 _begin_task）。
         self._busy_name = ""
         # 参数快照按线程存放：工作线程只读自己那份，绝不读运行期会被别的任务
         # 用 _ensure_snap(force=True) 改写的 self._snap。
@@ -111,6 +111,23 @@ class ConvertApp(ttk.Frame):
         # 异常会被静默吞掉，表现为"选项改了但界面没反应"。
         self.output_dir.trace_add("write", self.on_output_dir_change)
         self.recursive.trace_add("write", self.on_recursive_change)
+
+        # ═══ 任务壳：与其余五个 App **同一份实现**（toolkit_widgets.TaskRunner）═══
+        # 谁负责什么（写清楚，免得以后又长出第二份）：
+        #   * TaskRunner —— running 标志（真正的重入闸门）、忙碌 UI（on_busy）、
+        #     线程与失败路径（on_error 回主线程执行）、进度起停钩子；
+        #   * 本 App —— **暂停/继续**状态机（TaskRunner 没有这个概念）、三种进度
+        #     文案（`_PROGRESS_TEXTS[convert|restore|clear]`；TaskRunner 的
+        #     `progress_update` 只会写 "done / total"，套上去会改外观）、
+        #     "进度栏空闲时整栏收起"。
+        # 放在 init_ui() 之后创建：忙碌/进度的回调都要碰 init_ui 里建的控件
+        # （但只在任务跑起来时才被调用）。
+        self.task = TaskRunner(
+            self.root, self._ui,
+            on_busy=self._set_busy_ui,
+            progress_started=lambda: self._progress_panel(True),
+            progress_stopped=self._progress_done,
+        )
 
     def init_ui(self):
         """界面 (统一组件: dir_row / tool_header / color 模板)."""
@@ -248,34 +265,36 @@ class ConvertApp(ttk.Frame):
             except Exception:
                 pass
 
-    def _begin_task(self, name, already_started=False):
-        """大任务入口的原子重入保护；返回本任务是否获得执行权。
+    def _begin_task(self, name):
+        """重入**拒绝的用户可见反馈**；返回本任务是否获得了执行权。
 
-        必须在**启动线程之前**在主线程调用：按钮禁用经 UI 泵投递（最多 30ms 后
-        才生效），存在窗口期，连点两次会起两个线程交叉写同一批文件。
+        为什么还留着它：running 标志已经归 TaskRunner（`task.run()` 在已在跑时返回
+        False），但"谁在跑 + 一句人话提示"是 App 的事 —— TaskRunner 不认识任务名。
+        真正的原子闸门在 `task.run()` 里（主线程同步置位 running）；这里只是**闸门前
+        的哨兵**，两者判断的是同一个 `task.running`，不存在两份状态。
         """
-        if already_started:
-            return True
-        if self.running:
+        if self.task.running:
             who = self._busy_name or "另一任务"
             log_summary(f"[拒绝] {name}：{who}正在运行", "warn")
             self._ui(messagebox.showwarning, "提示",
                      f"已有任务正在运行：{who}。\n"
                      f"请等它结束或先取消，再执行「{name}」。")
             return False
-        self.running = True
         self._busy_name = name
-        self._ui(self._set_busy_ui, True)
         return True
 
-    def _end_task(self):
-        """任务收尾：复位重入标志并恢复三个启动按钮。"""
-        self.running = False
+    def _abort_task(self):
+        """入口在真正启动任务之前放弃（例如用户取消了确认框）：清掉"谁在跑"。"""
         self._busy_name = ""
-        self._ui(self._set_busy_ui, False)
 
     def _set_busy_ui(self, busy):
-        """忙碌时禁用"开始转换 / 恢复备份 / 清空备份"（主线程执行）。"""
+        """忙碌时禁用"开始转换 / 恢复备份 / 清空备份"（**TaskRunner 在主线程调它**）。
+
+        空闲时顺手清掉 `_busy_name`：任务收尾只有一个入口（TaskRunner 的 `_finish`），
+        所以"谁在跑"不会漏清。
+        """
+        if not busy:
+            self._busy_name = ""
         state = tk.DISABLED if busy else tk.NORMAL
         for btn in (getattr(self, "start_btn", None), getattr(self, "restore_btn", None),
                     getattr(self, "clear_btn", None)):
@@ -286,13 +305,15 @@ class ConvertApp(ttk.Frame):
             except Exception:
                 pass
 
-    def _start_worker(self, target, snap, name):
-        """统一的线程启动：线程起不来必须复位忙碌标志，否则按钮永久卡死。"""
-        try:
-            threading.Thread(target=target, args=(snap, True), daemon=True).start()
-        except Exception as e:
-            log_summary(f"启动{name}线程失败：{str(e)}", "err")
-            self._end_task()
+    def _task_error(self, exc):
+        """worker 抛异常时的**主线程**回调（TaskRunner 保证已回主线程）：不静默。
+
+        各 worker 自己已经 try/except 并写日志 + 弹错误框（见 run_restore 等）；
+        这一层是"漏网异常"的兜底 —— 以前靠 `_start_worker` 的 try 挡"线程起不来"，
+        现在线程由 TaskRunner 起，异常必须回主线程报出来。
+        """
+        log_summary(f"后台任务失败：{type(exc).__name__}: {exc}", "err")
+        self._ui(errbox, "错误", str(exc))
 
     def _ensure_snap(self, force=False):
         """确保快照存在 (主线程直接调 get_files 等时刷新为最新值)，返回该快照。
@@ -740,10 +761,12 @@ class ConvertApp(ttk.Frame):
             log_summary(f"[恢复失败] {os.path.basename(bak_path)} | {str(e)}")
             return False
 
-    def run_restore(self, snap=None, already_started=False):
-        """执行恢复备份逻辑（适配backup目录下的.bak格式）"""
-        if not already_started and not self._begin_task("恢复备份"):
-            return
+    def run_restore(self, snap=None):
+        """执行恢复备份逻辑（适配 backup 目录下的 .bak 格式）。
+
+        任务壳（running / 忙碌 UI / 线程 / 失败路径）由共享 TaskRunner 负责
+        （见 __init__ 末尾）；本方法只管业务，并在 finally 里解绑本线程的参数快照。
+        """
         if snap is None:
             snap = self._ensure_snap(force=True)
         self._bind_task_snap(snap)
@@ -799,24 +822,22 @@ class ConvertApp(ttk.Frame):
             self._ui(errbox, "错误", str(e))
         finally:
             self._unbind_task_snap()
-            self._end_task()
 
     def start_restore_thread(self):
-        """启动恢复备份线程"""
+        """启动恢复备份任务（忙碌/线程/失败路径统一走共享 TaskRunner）。"""
         if not self._begin_task("恢复备份"):
             return
         if not messagebox.askyesno("确认", "恢复备份将替换当前文件，是否继续？"):
             log_summary("已取消恢复备份", "dim")
-            self._end_task()
+            self._abort_task()
             return
         snap = self._ensure_snap(force=True)   # 任务启动时冻结当前界面参数
-        self._start_worker(self.run_restore, snap, "恢复备份")
+        # 同一线程里刚查过 task.running，run() 不会再返回 False（返回即重入，见 _begin_task）
+        self.task.run(lambda: self.run_restore(snap), on_error=self._task_error)
 
     # ------------------------------ 清空备份功能 ------------------------------
-    def run_clear_backup(self, snap=None, already_started=False):
-        """执行清空backup目录下的.bak备份文件逻辑"""
-        if not already_started and not self._begin_task("清空备份"):
-            return
+    def run_clear_backup(self, snap=None):
+        """执行清空 backup 目录下的 .bak 备份文件逻辑（任务壳走共享 TaskRunner）。"""
         if snap is None:
             snap = self._ensure_snap(force=True)
         self._bind_task_snap(snap)
@@ -875,18 +896,17 @@ class ConvertApp(ttk.Frame):
             self._ui(errbox, "错误", str(e))
         finally:
             self._unbind_task_snap()
-            self._end_task()
 
     def start_clear_backup_thread(self):
-        """启动清空备份线程"""
+        """启动清空备份任务（忙碌/线程/失败路径统一走共享 TaskRunner）。"""
         if not self._begin_task("清空备份"):
             return
         if not messagebox.askyesno("确认", "确认要删除backup目录下所有.bak备份文件吗？此操作不可恢复！"):
             log_summary("已取消清空备份", "dim")
-            self._end_task()
+            self._abort_task()
             return
         snap = self._ensure_snap(force=True)   # 任务启动时冻结当前界面参数
-        self._start_worker(self.run_clear_backup, snap, "清空备份")
+        self.task.run(lambda: self.run_clear_backup(snap), on_error=self._task_error)
 
     # ------------------------------ 核心转换 ------------------------------
     def _get_source_encoding(self, raw_data, snap=None):
@@ -1112,16 +1132,16 @@ class ConvertApp(ttk.Frame):
             log_summary(f"[失败] {os.path.basename(path)} | {str(e)}")
             return "failed"
 
-    def run_convert(self, snap=None, already_started=False):
+    def run_convert(self, snap=None):
         """执行转换。
 
         snap: 本次任务的参数快照（start_thread 在主线程冻结后通过参数传入）。
               直接调用（脚本 / 探针）时自行冻结一份。工作线程全程只读这一份，
               绝不读运行期会被"恢复备份"等任务用 _ensure_snap(force=True)
               改写的 self._snap。
+        任务壳（running / 忙碌 UI / 线程 / 失败路径）由共享 TaskRunner 负责；
+        **暂停/继续**状态机仍在本 App（见 _run_convert_body 与 _toggle_pause）。
         """
-        if not already_started and not self._begin_task("开始转换"):
-            return
         if snap is None:
             snap = self._ensure_snap(force=True)
         self._bind_task_snap(snap)
@@ -1130,7 +1150,6 @@ class ConvertApp(ttk.Frame):
             self._run_convert_body(snap)
         finally:
             self._unbind_task_snap()
-            self._end_task()
 
     def _run_convert_body(self, snap):
         """转换主流程（在持有本任务快照的线程内执行）。"""
@@ -1227,20 +1246,21 @@ class ConvertApp(ttk.Frame):
             self.pause_event.set()
 
     def start_thread(self):
-        """启动转换线程。
+        """启动转换任务（忙碌/线程/失败路径统一走共享 TaskRunner）。
 
-        与其余五个 App 不同，本 App **不**使用 toolkit 的 TaskRunner，理由：
-          * 本工具是唯一带「暂停 / 继续」状态机的（pause_event + paused），
-            其按钮三态（开始/暂停/取消）在 _run_convert_body 的 try/finally 里
-            自洽管理；
-          * run_restore / run_clear_backup 也各自持有自己的任务状态；
-        强行套 TaskRunner 只会让 running 标志与按钮状态出现两份来源，
-        没有收益且要重写暂停逻辑。TaskRunner 的其他能力（构造级探针、
-        失败不静默）在本 App 由显式 try/except + log_summary 覆盖。
+        **2026-09-14 改**：本 App 原先不用 TaskRunner，理由写在旧注释里（暂停/继续状态机
+        + 三类任务）。那条理由对**暂停**仍然成立 —— TaskRunner 没有暂停概念，暂停/继续
+        与"开始 / 暂停 / 取消"三态仍由本 App 在 `_run_convert_body` 的 try/finally 里管理；
+        三种进度文案与"进度栏空闲收起"也仍归本 App（TaskRunner 的 `progress_update`
+        只会写 "done / total"，套上去会改外观）。
+
+        但**任务壳**没必要各养一份：running 标志、忙碌 UI、线程启动、失败路径现在统一
+        由 `self.task`（见 __init__ 末尾）负责 —— 这正是当初"两份来源"担心的那部分，
+        现在只剩一份；`_begin_task` 退化成"拒绝时的用户可见提示"。
         """
-        # 第一件事就是重入检查并置位：按钮禁用是异步投递的，连点两次会起两个线程
-        # 交叉写同一批文件、统计双份累加。
+        # 第一件事就是重入检查：真正的原子闸门是 task.run() 里同步置位的 running，
+        # 这里先给出人话提示（连点两次不会起两个线程交叉写同一批文件、统计双份累加）。
         if not self._begin_task("开始转换"):
             return
         snap = self._ensure_snap(force=True)   # 任务启动时冻结当前界面参数
-        self._start_worker(self.run_convert, snap, "转换")
+        self.task.run(lambda: self.run_convert(snap), on_error=self._task_error)

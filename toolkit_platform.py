@@ -67,6 +67,9 @@ def save_app_config(name, cfg):
 #     path = D:\tools\ffmpeg\bin\ffmpeg.exe
 #     probe = D:\tools\ffmpeg\bin\ffprobe.exe
 #
+#     [font]
+#     path = C:\Windows\Fonts\msyh.ttc        # 汉化包生成页"上次用过的字体"
+#
 # **必须保留其它段**：历史上这个文件只放主题，整文件覆盖（`"w"` 直接重写）
 # 不会暴露问题；现在同一个文件还要放各工具的手动设置，覆盖就会互相抹掉。
 # 所以下面的写入口一律"读 → 改一项 → 整体写回"。新增设置请复用它们，

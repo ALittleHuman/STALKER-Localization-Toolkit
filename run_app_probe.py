@@ -139,37 +139,55 @@ def main():
         check("构造 %s" % key, make(key, cls))
 
     def video_no_encoder_scan_at_construct():
-        """构造 VideoOGMApp 不得跑 `ffmpeg -encoders`（Hub 启动会一次性构造全部 6 个 App）。
+        """构造 VideoOGMApp **既不跑 `ffmpeg -encoders`，也不探测 ffmpeg**。
 
-        历史缺陷：`Converter.__init__` 里同步跑 `_scan_encoders()` = `ffmpeg -encoders`
-        （timeout=10s）—— 冷盘/杀软扫描下用户看到的就是"Hub 启动就卡住"。现在惰性化：
-        首次真正要选编码器时（已在转换的工作线程里）才扫。
-        只统计参数里带 `-encoders` 的调用 —— 构造期本来会跑 `where` 之类的查找，
-        把它们算进来会让这条锁因无关原因误红。
+        两条都是"Hub 启动会一次性构造全部 6 个 App"逼出来的：
+          * 历史缺陷：`Converter.__init__` 里同步跑 `_scan_encoders()` = `ffmpeg -encoders`
+            （timeout=10s）—— 冷盘/杀软扫描下用户看到的就是"Hub 启动就卡住"；
+          * 2026-09-14：`find_ffmpeg()` 也挪出构造期（冻结包里 ~373 ms，大头是
+            `import imageio_ffmpeg`），改到动作入口（`_ensure_ffmpeg`）。
+        两条**都必须验证"惰性没退化成永不执行"** —— 否则编码器选择会静默回退到 mpeg4、
+        ffmpeg 也永远找不到，比卡顿更糟。
+        只统计参数里带 `-encoders` 的调用；构造期本来会跑 `where` 之类的查找，把它们
+        算进来会让这条锁因无关原因误红。
         """
         import apps.video_ogm_app as _v
-        calls = []
-        orig_run = _v.subprocess.run
+        calls, finds = [], []
+        orig_run, orig_find = _v.subprocess.run, _v.find_ffmpeg
 
         def spy(*a, **k):
             calls.append(a[0] if a else k.get("args"))
             return orig_run(*a, **k)
+
+        def spy_find():
+            finds.append(1)
+            return orig_find()
         _v.subprocess.run = spy
+        _v.find_ffmpeg = spy_find
+
+        def _count_encoder_scans():
+            return len([c for c in calls
+                        if isinstance(c, (list, tuple)) and "-encoders" in c])
         try:
             app = VideoOGMApp(tk.Frame(_ROOT))
             hits = [c for c in calls if isinstance(c, (list, tuple)) and "-encoders" in c]
             assert not hits, "构造 VideoOGMApp 时跑了 ffmpeg -encoders：%r" % (hits[:1],)
-            # 惰性扫描必须仍然存在：显式调一次要真的去跑 —— 否则"惰性"退化成"永不扫描"，
-            # 编码器选择会静默回退到 mpeg4（比卡顿更糟）。
-            # 注意：这次调用必须在 **spy 仍在位** 时做（spy 已在 finally 里还原过一次，
-            # 那是本条锁自己的第一版 bug：还原后才调，于是计数没涨、锁自己变红）。
+            assert not finds, "构造 VideoOGMApp 时跑了 find_ffmpeg（构造期不该探测 ffmpeg）"
+            assert app.converter is None, "构造完就已经有 converter 了（说明探测没被推迟）"
+            assert not app.ffmpeg, "构造完 self.ffmpeg 就已经有值（同上）"
+            # 惰性必须仍有效：显式走一次动作入口（_ensure_ffmpeg），它必须真的去探。
+            app._ensure_ffmpeg()
+            assert finds, "动作入口没有触发 ffmpeg 探测（能力被删掉了）"
+            # 环境相关：这台机器上有没有 ffmpeg —— 有才继续验"编码器惰性扫描仍有效"。
             if app.converter is not None:
-                before = len(calls)
+                before = _count_encoder_scans()
                 app.converter._ensure_encoders()
-                assert len(calls) > before, "惰性扫描没有真的发生（能力被删掉了）"
+                assert _count_encoder_scans() > before, \
+                    "惰性扫描没有真的发生（能力被删掉了）"
         finally:
-            _v.subprocess.run = orig_run
-    check("视频.构造 App 不跑 ffmpeg -encoders（Hub 启动不卡）、惰性扫描仍有效",
+            _v.subprocess.run, _v.find_ffmpeg = orig_run, orig_find
+    check("视频.构造 App 不探测 ffmpeg、也不跑 ffmpeg -encoders（Hub 启动不卡）"
+          "，两者惰性仍有效",
           video_no_encoder_scan_at_construct)
 
     def video_ffprobe_is_async():
@@ -181,7 +199,9 @@ def main():
         """
         import apps.video_ogm_app as _v
         app = VideoOGMApp(tk.Frame(_ROOT))
-        # 前置检查要求 ffprobe "是个存在的文件"；用探针自己的脚本当占位
+        # 前置检查要求 ffprobe "是个存在的文件"；用探针自己的脚本当占位。
+        # （先走一次惰性探测，免得 _on_source 里的探测把下面的打桩值覆盖掉。）
+        app._ensure_ffmpeg()
         app.ffprobe = os.path.abspath(__file__)
         orig = _v.parse_video_info
 
@@ -212,6 +232,338 @@ def main():
             _v.parse_video_info = orig
     check("视频.选源文件的 ffprobe 解析不阻塞 UI 线程（结果经 _ui 回主线程）",
           video_ffprobe_is_async)
+
+    def video_ffmpeg_only_program_dir():
+        """ffmpeg 只认两处：**用户手动指定** + **程序目录**（用户 2026-09-14 口径）。
+
+        用户原话："ffmpeg不用检不检测，直接读目录下的就行，读不到再跳出窗口让用户手动选择。"
+        判据分两层：
+          * 源码层（AST 取 `find_ffmpeg` 的函数体）：不得再出现 imageio-ffmpeg /
+            locate_exe / extra_dirs / PATH 搜索 —— 那些"到处找"的路径正是启动变慢
+            与"到底用了哪个 ffmpeg 说不清"的来源；必须读 `app_dir()`。
+          * 运行层：真跑一遍，返回值只能落在"程序目录"或"用户手动指定"这两处。
+        """
+        import ast
+        from apps.video_ogm_app import find_ffmpeg
+        base = os.path.dirname(os.path.abspath(__file__))
+        src_p = os.path.join(base, "apps", "video_ogm_app.py")
+        with open(src_p, encoding="utf-8") as f:
+            src = f.read()
+        fn = next((n for n in ast.walk(ast.parse(src))
+                   if isinstance(n, ast.FunctionDef) and n.name == "find_ffmpeg"), None)
+        assert fn is not None, "找不到 find_ffmpeg"
+        # ★ 只扫**代码语句**，剥掉 docstring：函数的 docstring 里正解释"不再 import
+        #   imageio / 不再搜 PATH"，按全文扫会被自己的说明文字喂饱（第一次就是这么红的）。
+        stmts = [n for n in fn.body
+                 if not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
+                         and isinstance(n.value.value, str))]
+        body = "\n".join(ast.get_source_segment(src, n) or "" for n in stmts)
+        for banned in ("imageio", "locate_exe", "extra_dirs", "which("):
+            assert banned not in body, \
+                "find_ffmpeg 里又出现了 %r（用户口径：只读程序目录）" % banned
+        assert "app_dir()" in body, "find_ffmpeg 没有读程序目录"
+        from toolkit import load_user_value as _luv
+        manual = _luv("ffmpeg", "path") or ""
+        ff, _fp = find_ffmpeg()
+        if ff:
+            d = os.path.dirname(os.path.abspath(ff))
+            assert d == os.path.abspath(base) or (
+                manual and os.path.abspath(ff) == os.path.abspath(manual)), \
+                "find_ffmpeg 返回了第三种来源：%s" % ff
+    check("视频.ffmpeg 只认「用户手动指定 + 程序目录」（不再搜 PATH / 不 import imageio）",
+          video_ffmpeg_only_program_dir)
+
+    def video_missing_ffmpeg_dialog():
+        """读不到 ffmpeg → 弹**带按钮的小窗口**；「自动安装」只有用户点它才跑。
+
+        用户原话："ffmpeg自动安装的按钮放在弹窗里。"（即：自动安装保留，但不许后台偷偷跑）
+        判据三件：
+          * 弹窗里真的有「自动安装 / 手动选择 / 稍后」三个按钮；
+          * 点「自动安装」→ 进 `_start_auto_install`（那里才起线程）；
+          * 点「稍后」→ 什么都不做（不安装、不弹选择框）；
+          * 源码层：`__init__` / `_ensure_ffmpeg` 里**不得**出现自动安装 —— 它只能挂在按钮上。
+        """
+        import ast
+        import tkinter as _tk
+
+        def _buttons(win):
+            out = {}
+
+            def walk(w):
+                for c in w.winfo_children():
+                    if isinstance(c, _tk.ttk.Button):
+                        out[str(c.cget("text"))] = c
+                    walk(c)
+            walk(win)
+            return out
+
+        app = VideoOGMApp(tk.Frame(_ROOT))
+        app._ffmpeg_probed = True              # 装作"已探测、程序目录下没有"
+        calls = []
+        app._start_auto_install = lambda: calls.append("auto")
+        app._open_settings = lambda: calls.append("manual")
+
+        def _pop():
+            app._offer_ffmpeg_help()
+            _ROOT.update_idletasks()
+            tops = [w for w in app.root.winfo_children() if isinstance(w, _tk.Toplevel)]
+            assert tops, "没有弹出帮助窗口"
+            return tops[-1]
+
+        w1 = _pop()
+        names = sorted(_buttons(w1))
+        assert set(names) >= {"自动安装", "手动选择", "稍后"}, "弹窗按钮不全：%r" % names
+        _buttons(w1)["自动安装"].invoke()
+        assert calls == ["auto"], "点『自动安装』没进自动安装入口：%r" % (calls,)
+        w2 = _pop()
+        _buttons(w2)["稍后"].invoke()
+        assert calls == ["auto"], "点『稍后』不该做任何事：%r" % (calls,)
+
+        base = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(base, "apps", "video_ogm_app.py"), encoding="utf-8") as f:
+            src = f.read()
+        tree = ast.parse(src)
+        for fname in ("__init__", "_ensure_ffmpeg"):
+            fn = next((n for n in ast.walk(tree)
+                       if isinstance(n, ast.FunctionDef) and n.name == fname), None)
+            assert fn is not None, "找不到 %s" % fname
+            seg = ast.get_source_segment(src, fn) or ""
+            assert "_auto_install_ffmpeg" not in seg, \
+                "%s 里又出现自动安装了（用户口径：自动安装按钮放在弹窗里）" % fname
+    check("视频.读不到 ffmpeg 时弹带按钮的窗口；『自动安装』只有点它才跑",
+          video_missing_ffmpeg_dialog)
+
+    def convert_task_shell_is_shared_taskrunner():
+        """convert_app 的**任务壳**（running / 忙碌 UI / 线程 / 失败路径）统一走 TaskRunner。
+
+        这是长期待办"忙碌/进度统一到 TaskRunner"的落点。代码里原先有一条注释说
+        "本 App 不用 TaskRunner"，理由是暂停/继续状态机与三类任务 —— 那条理由对
+        **暂停**成立（TaskRunner 没有暂停概念），但对**任务壳**不成立：running 标志
+        与忙碌 UI 原本在本 App 另养了一份，正是所谓"两份来源"。
+
+        边界（本锁只钉任务壳，不碰这两样）：
+          * 暂停/继续（`pause_event` + 开始/暂停/取消三态）仍由本 App 管理；
+          * 三种进度文案（convert/restore/clear）与"进度栏空闲收起"仍由本 App 管理
+            （TaskRunner 的 `progress_update` 只写 "done / total"，套上去会改外观）。
+
+        判据：构造后 `app.task` 是共享 TaskRunner 且空闲；跑一个**可控慢任务**时
+        running=True 且三个启动按钮全禁用；运行期再走入口被拒并给出提示；
+        任务结束后 running=False 且按钮恢复；源码里不得再自己起任务线程。
+        """
+        import threading as _th
+        from apps.convert_app import ConvertApp
+        from toolkit_widgets import TaskRunner as _TaskRunner
+
+        app = ConvertApp(tk.Frame(_ROOT))
+        assert isinstance(app.task, _TaskRunner), "convert_app 没有用共享 TaskRunner"
+        assert app.task.running is False, "新构造的 App 就处于忙碌态"
+
+        started, release = _th.Event(), _th.Event()
+
+        def slow():
+            started.set()
+            release.wait(5)
+
+        app.task.run(slow)
+        started.wait(5)
+        assert app.task.running is True, "任务跑起来后 running 没置位"
+        busy = [str(b.cget("state")) for b in (app.start_btn, app.restore_btn, app.clear_btn)]
+        assert busy == ["disabled"] * 3, "忙碌时三个启动按钮没有全部禁用：%r" % busy
+
+        _dialogs.clear()
+        app._busy_name = "转换"
+        assert app._begin_task("恢复备份") is False, "运行期没有拒绝第二个任务"
+        # 拒绝提示是**投递**到 UI 泵的（线程纪律：不在调用栈里直接碰控件）→ 先泵一次
+        for _ in range(60):
+            _ROOT.update()
+            if any("已有任务正在运行" in str(d[2]) for d in _dialogs):
+                break
+            time.sleep(0.02)
+        assert any("已有任务正在运行" in str(d[2]) for d in _dialogs), \
+            "拒绝时没有给出提示（应有『已有任务正在运行』）；实收 %r" % (_dialogs[-2:],)
+
+        release.set()
+        for _ in range(150):
+            _ROOT.update()
+            if not app.task.running:
+                break
+            time.sleep(0.02)
+        assert app.task.running is False, "任务结束后 running 没复位"
+        rest = [str(b.cget("state")) for b in (app.start_btn, app.restore_btn, app.clear_btn)]
+        assert rest == ["normal"] * 3, "任务结束后按钮没恢复：%r" % rest
+
+        # 失败路径：worker 抛异常 → on_error 回主线程报出来（不静默）+ 忙碌态复位
+        def boom():
+            raise RuntimeError("probe-boom")
+        _dialogs.clear()
+        app.task.run(boom, on_error=app._task_error)
+        for _ in range(150):
+            _ROOT.update()
+            if not app.task.running:
+                break
+            time.sleep(0.02)
+        assert app.task.running is False, "失败后 running 没复位"
+        assert any(d[0] == "errbox" for d in _dialogs), \
+            "worker 抛异常没有被报出来（应回主线程弹 errbox）；实收 %r" % (_dialogs[-2:],)
+        rest2 = [str(b.cget("state")) for b in (app.start_btn, app.restore_btn, app.clear_btn)]
+        assert rest2 == ["normal"] * 3, "失败后按钮没恢复：%r" % rest2
+
+        base = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(base, "apps", "convert_app.py"), encoding="utf-8") as f:
+            src = f.read()
+        assert "threading.Thread(" not in src, \
+            "convert_app 里还在自己起任务线程（应统一走 task.run）"
+    check("编码转换.任务壳（忙碌/重入/线程）统一走 TaskRunner；暂停与三类进度文案仍归 App",
+          convert_task_shell_is_shared_taskrunner)
+
+    def font_picker_fixes():
+        """字体选择器本轮修的四处（用户 2026-09-14 实测报告）。
+
+        ① 预览图固定 `330x130`、缩放只放大字号 → 放大就被裁："只有那一个角落能显示、
+           缩放没什么卵用"；现在**图随内容增长**（放大 = 整张图变大，滚动条可用）。
+        ② 描述文字 `wraplength` 取的是它**自己**的宽度（布局早期为 1）被 80 下限兜住
+           → 一个字符一行；现在跟随**窗格**宽度。
+        ③ 字形判据把"取不到字形"的字 **跳过**（`if b is None: continue`），于是日文字体
+           hpsimplifiedjpan（有 永你好化、没有 汉测试…）被判 **✓ 中文**，而预览里那几个字
+           是整字宽的空洞；现在缺一个简体字就判 `missing`（fail-closed），并在标题里
+           点出"缺：汉测试…"。
+        ④ 选择结果只活在内存里 → 现在点『选择』（含"浏览其他目录"）就写 `user.ltx`
+           的 `[font]` 段，下次启动读回。
+        """
+        import tempfile
+        import toolkit_platform
+        from apps.font_pack_app import FontPackApp
+
+        def _walk(w):
+            yield w
+            for c in w.winfo_children():
+                yield from _walk(c)
+
+        with tempfile.TemporaryDirectory() as d:
+            real_app_dir = toolkit_platform.app_dir
+            toolkit_platform.app_dir = lambda: d
+            win = None
+            try:
+                app = FontPackApp(tk.Frame(_ROOT))
+                app._browse_font()
+                _ROOT.update_idletasks()
+                _ROOT.update()
+                wins = [w for w in app.root.winfo_children() if isinstance(w, tk.Toplevel)]
+                assert wins, "字体选择器没建出来"
+                win = wins[-1]
+                widgets = list(_walk(win))
+                lb = next((w for w in widgets if isinstance(w, tk.Listbox)), None)
+                assert lb is not None, "找不到字体列表"
+                # ★ 预览 label 是**挂在预览画布上的 tk.Label**：不能"取第一个 Canvas"——
+                #   `add_clipped` 的视口自己也是个 Canvas（探针第一版就抓错了对象，
+                #   于是误报"预览图没出来"）。
+                preview_lbl = next((w for w in widgets
+                                    if isinstance(w, tk.Label)
+                                    and isinstance(w.master, tk.Canvas)), None)
+                assert preview_lbl is not None, "找不到预览 label（挂在画布上的 tk.Label）"
+
+                def _mark_line(sub):
+                    for i in range(lb.size()):
+                        line = lb.get(i)
+                        if sub in line:
+                            return i, line
+                    return None, ""
+                # 等分片检测把标记填进列表（每片 24 个 × after(25)）
+                for _ in range(500):
+                    _ROOT.update()
+                    _, l = _mark_line("simsun.ttc")
+                    if l and ("✓" in l or "⚠" in l):
+                        break
+                    time.sleep(0.02)
+
+                i_jpan, l_jpan = _mark_line("hpsimplifiedjpan-regular.ttf")
+                i_simsun, l_simsun = _mark_line("simsun.ttc")
+                if i_jpan is not None:
+                    assert "⚠" in l_jpan, "日文字体（缺简体字）应判缺字形：%r" % l_jpan
+                if i_simsun is not None:
+                    assert "✓" in l_simsun, "simsun 应判含中文字形：%r" % l_simsun
+
+                def _select(idx):
+                    lb.selection_clear(0, "end")
+                    lb.selection_set(idx)
+                    lb.event_generate("<<ListboxSelect>>")
+                    _ROOT.update()
+
+                def _desc_label(path):
+                    base = os.path.basename(path)
+                    return next((w for w in _walk(win) if isinstance(w, tk.ttk.Label)
+                                 and base in str(w.cget("text") or "")), None)
+
+                # ③ 预览标题要点出缺哪些字（不再让人猜那排空洞是什么）
+                if i_jpan is not None:
+                    _select(i_jpan)
+                    _ROOT.update_idletasks()
+                    dl = _desc_label("hpsimplifiedjpan-regular.ttf")
+                    assert dl is not None, "选中后没有描述标签"
+                    txt = str(dl.cget("text"))
+                    assert "缺" in txt, "缺字形的字体，描述里应点出缺哪些字：%r" % txt
+                    # ③b 用户口径 2026-09-14："日语的，标明是日语字体，然后那些缺简体的就上繁体。"
+                    #     日语/繁体字体（缺的简体字都能用繁体顶）必须**与"疑似缺字形"分开标**，
+                    #     并在标题里列出"简体→繁体"的对应 —— 预览行已经换成繁体字形在画。
+                    assert "日语" in l_jpan, "日文字体应在列表里标明「日语」：%r" % l_jpan
+                    assert "日语" in txt, "预览标题应标明是日语字体：%r" % txt
+                    assert "→" in txt and "繁体" in txt, \
+                        "标题应说明缺的简体用繁体显示（含 简体→繁体 对应）：%r" % txt
+                    assert "漢" in txt, "标题应给出具体对应（如 汉→漢）：%r" % txt
+
+                target = i_simsun if i_simsun is not None else 0
+                _select(target)
+                _ROOT.update_idletasks()
+                assert getattr(preview_lbl, "image", None) is not None, \
+                    "预览图没出来：%r" % str(_desc_label(lb.get(target).split("  [")[0])
+                                             .cget("text") if i_simsun is not None else "")
+                w1 = int(preview_lbl.image.width())
+
+                # ② 描述文字按窗格宽度换行（不是 80 那种"一字一行"）
+                dl2 = _desc_label(lb.get(target).split("  [")[0])
+                assert dl2 is not None, "找不到描述标签"
+                wl = int(str(dl2.cget("wraplength")) or 0)
+                pane_w = int(dl2.master.winfo_width())
+                print("        描述标签 wraplength=%d  窗格宽=%d  预览图宽=%d"
+                      % (wl, pane_w, w1))
+                assert wl >= 160, "wraplength 没跟上来（用户实测是 80 → 一字一行）：%r" % wl
+                assert pane_w <= 1 or wl >= pane_w - 24, \
+                    "wraplength(%d) 没有跟随窗格宽度(%d)" % (wl, pane_w)
+
+                # ① 放大后**图**要变大（不再是固定 330 宽 + 裁字）
+                # 按钮按"有 invoke 且文本匹配"找：缩放/选择都是 ttk.Button，
+                # 而 isinstance(..., tk.Button) 只认 Tk 原生按钮（第一版就栽在这）。
+                def _btn(text):
+                    return next((w for w in widgets
+                                 if hasattr(w, "invoke")
+                                 and str(w.cget("text")) == text), None)
+                plus = _btn("+")
+                assert plus is not None, "找不到放大按钮"
+                plus.invoke()
+                _ROOT.update()
+                w2 = int(preview_lbl.image.width())
+                assert w2 > w1, "放大后预览图没有变大（%d → %d）" % (w1, w2)
+
+                # ④ 点『选择』→ 落盘到（临时）user.ltx，下次启动能读回
+                pick_btn = _btn("选择")
+                assert pick_btn is not None, "找不到『选择』按钮"
+                _select(target)
+                pick_btn.invoke()
+                saved = toolkit_platform.load_user_value("font", "path")
+                assert saved and os.path.isfile(saved), \
+                    "点『选择』没有把字体写进 user.ltx：%r" % saved
+                assert os.path.isfile(os.path.join(d, "user.ltx")), \
+                    "user.ltx 没有落在应用目录（应写到 app_dir 下）"
+            finally:
+                toolkit_platform.app_dir = real_app_dir
+                try:
+                    if win is not None and win.winfo_exists():
+                        win.destroy()
+                except Exception:
+                    pass
+    check("字体选择器.预览随内容增长 / 描述按窗格换行 / 缺字形判据一致 / 选择即落盘"
+          " / 日文字体标明且缺简体用繁体显示",
+          font_picker_fixes)
 
     print()
     print("=== 2. 直接调用入口方法（绕过线程启动器 / UI 事件） ===")

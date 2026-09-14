@@ -15,9 +15,11 @@
   B. 插件 `_ui()` 里重新 `import tkinter` → "engine_utf8_patch 里已无 Tk 构造/对话框"
   C. `QtUiFactory.pack()` 的 left/right 归位短路 → "三个动作按钮落在同一个水平行容器里"
   D. `QtUiFactory.row()` 用 `QHBoxLayout`  → "外层容器是竖直堆叠（Tk 默认 pack 方向）…"
-  E. 契约清单读取返回空元组（= 悄悄降级）→ "契约清单是从 toolkit_plugin_ui.py 读到的 14 个方法…"
-  F. 面板三个按钮全接到 identify     → "实验插件面板的三个按钮点了真的进对应流程…"
+  E. 契约清单读取返回空元组（= 悄悄降级）→ "契约清单是从 toolkit_plugin_ui.py 读到的 16 个方法…"
+  F. 面板『生成』接到 identify     → "实验插件面板的按钮点了真的进对应流程…"
      （这条跑的是 **Tk 侧**探针 `run_ext_probe.py`：结构锁只看 command 非空，接线接错照样绿）
+  G. 把差异字节数塞进判定条件     → "AST 锁：判定路径里不得出现“差异字节数”这类代理指标…"
+     （行为上什么都不改，**只有** AST 结构锁能抓住 —— 用它证明红线的结构锁不是摆设）
 
 C/D 是"布局语义"锁：C 对应"pack 退化空操作"（迁移前行为），D 对应第一版把容器造成横向
 （同一份插件代码在两个后端布局不同）。D 那次第一次跑**探针全绿**——原锁只比对了控件顺序的
@@ -36,11 +38,15 @@ QTH = os.path.join(BASE, "qt_pilot_theme.py")
 PLUG = os.path.join(BASE, "plugins", "engine_utf8_patch.py")
 TARGETS = (QT, QTH, PLUG)
 PY = sys.executable
+FPK = os.path.join(BASE, "font_pack", "font_pack.py")
+FPA = os.path.join(BASE, "apps", "font_pack_app.py")
+BG = os.path.join(BASE, "build_gui.py")
+TARGETS = (QT, QTH, PLUG, FPK, FPA, BG)
 
 L_OK = "真实插件面板在 Qt 后端建出来了（panel/ok，而不是 skip）"
 L_SRC = "engine_utf8_patch 里已无 Tk 构造/对话框（迁移真的落到 api.ui）"
 L_ROW = "三个动作按钮落在同一个水平行容器里（pack(side='left') 语义）"
-L_COL = "外层容器是竖直堆叠（Tk 默认 pack 方向），顺序 = 按钮行 → 路径标签 → 结果框"
+L_COL = "外层容器是竖直堆叠（Tk 默认 pack 方向），顺序 = 按钮行 → 提示行 → 结果框"
 
 INJECTIONS = [
     (PLUG, "run_qt_pilot_probe.py", "_ui() 永不返回 api.ui（等于仍自己造 Tk 控件）",
@@ -62,13 +68,22 @@ INJECTIONS = [
     (QT, "run_qt_pilot_probe.py", "契约清单读取失败（返回空元组，等于悄悄降级）",
      "                return tuple(ast.literal_eval(node.value))",
      "                return ()",
-     "契约清单是从 toolkit_plugin_ui.py 读到的 14 个方法（没降级成空/旧清单）"),
-    # ⑧ 接线接错：三个按钮都去 identify。结构锁（command 非空）抓不到，必须真 invoke()。
+     "契约清单是从 toolkit_plugin_ui.py 读到的 16 个方法（没降级成空/旧清单）"),
+    # ⑧ 接线接错：面板的『生成』也去 identify。结构锁（command 非空）抓不到，必须真 invoke()。
     #    这条同时跑 **Tk 侧**探针（run_ext_probe），因为"两个后端行为一致"才是迁移的验收点。
-    (PLUG, "run_ext_probe.py", "面板三个按钮全部接到 identify（接线接错）",
-     "on_click=lambda o=op: _gui_run(o, wrap)",
-     'on_click=lambda o=op: _gui_run("identify", wrap)',
-     "实验插件面板的三个按钮点了真的进对应流程（不只是 command 非空）"),
+    (PLUG, "run_ext_probe.py", "面板『生成』接到 identify（接线接错）",
+     'on_click=lambda: _gui_run("apply", wrap)',
+     'on_click=lambda: _gui_run("identify", wrap)',
+     "实验插件面板的按钮点了真的进对应流程（不只是 command 非空）"),
+    # ⑨ 代理指标：把"差了多少字节"塞进**判定**（这里是一句空转的 if）。
+    #    行为上什么都没改，所以只有 AST 结构锁能抓住它 —— 这条注入就是在证明
+    #    "红线的结构锁不是摆设"。
+    (PLUG, "run_ext_probe.py", "把差异字节数塞进判定条件（代理指标复活）",
+     '    fp["changed_bytes"] = _changed_bytes(data)\n',
+     '    fp["changed_bytes"] = _changed_bytes(data)\n'
+     '    if fp["changed_bytes"] == 88:            # 注入：拿代理指标当判据\n'
+     '        fp["cave_zeros"] = fp["cave_zeros"]\n',
+     "AST 锁：判定路径里不得出现“差异字节数”这类代理指标（比较/条件/常量名）"),
     # ── 主题映射（[9] 段）：错法都取"看起来对、其实漂了/错了"的那一类 ──
     (QTH, "run_qt_pilot_probe.py", "色板被篡改（bg 借用 surface：Qt 与 Tk 不再是同一份）",
      "    return TT.palette(mode)",
@@ -107,6 +122,61 @@ INJECTIONS = [
      "    import toolkit_theme as TT",
      "    import tkinter      # 注入：把 Tk 依赖接回来\n    import toolkit_theme as TT",
      "冻结 exe --themecheck：ok>0 且 bad=0"),
+    # ⑭⑮⑯⑰ 汉化包几何（2026-09-14 三修：①字比格子小 ②底边被吞 ③框伸进邻格）。
+    #   三条都是"看着对、其实量得出来不对"的错法，所以每条都必须由 run_functional_probe.py
+    #   的对应锁抓红；抓不住就说明那条锁是摆设。expect 允许给多个候选锁名 —— 几何是连锁的，
+    #   例如"不封顶"会先撞 .ini 布局锁（同一批像素的另一条不变量），那也是被抓住了。
+    (FPK, "run_functional_probe.py", "定标退化成按槽位名渲染（字又小 30%）",
+     "    for cand in range(size, size + 14):",
+     "    for cand in range(size, size + 1):   # 注入：不放大，退回按槽位名",
+     ("汉化包：墨迹按格子定标", "汉化包：.ini 布局满足原版不变量")),
+    (FPK, "run_functional_probe.py", "定标上限被拆掉（一路放大到越界）",
+     "            if ih > cell_h - 4 or (rw is not None and iw > rw):",
+     "            if False:                      # 注入：上限判据失效",
+     ("汉化包：墨迹按格子定标", "汉化包：.ini 布局满足原版不变量",
+      "汉化包：墨迹不出自己的行带下边界")),
+    (FPK, "run_functional_probe.py", "贴图画布少一行（最后一行像素被 paste 静默丢）",
+     "    need = max(1, max_y)",
+     "    need = max(1, max_y - 1)   # 注入：旧写法",
+     "汉化包：字库画布高 ≥ 行带总高"),
+    (FPK, "run_functional_probe.py", "框宽不再封顶到 cell（伸进邻格采样框）",
+     "        return min(rw, cell_h)",
+     "        return rw              # 注入：不封顶",
+     ("汉化包：.ini 布局满足原版不变量", "汉化包：DDS 逐字复核墨迹矩形 == 解析模型")),
+    # ⑱⑲⑳ 简繁替换（用户口径 2026-09-14："日语的…那些缺简体的就上繁体"）。
+    #   三条分别对应：表坏了 / 替换条件不存在（无条件替换）/ 界面退回过标签。
+    (FPK, "run_functional_probe.py", "简繁替换表被清空（缺简体又变回空白）",
+     "ST_FALLBACK = _load_st_fallback()",
+     "ST_FALLBACK = {}   # 注入：替换表空",
+     ("汉化包：简繁替换表只收", "汉化包：字体缺简体字形时用繁体字形补")),
+    (FPK, "run_functional_probe.py", "无条件替换（字体本来有该字形也换成繁体）",
+     # 注：font_pack.py 是 **CRLF** 文件，多行注入点里的 `\n` 匹配不上（本条第一版就栽在这，
+     # 报"注入点出现 0 次"）。用带换行的单行锚点即可，两侧行尾都能匹配。
+     "\n        if mb is None:",
+     "\n        if True:                       # 注入：无条件替换",
+     ("汉化包：字体缺简体字形时用繁体字形补", "汉化包：.ini 布局满足原版不变量",
+      "汉化包：DDS 逐字复核墨迹矩形 == 解析模型")),
+    (FPA, "run_app_probe.py", "字体选择器退回旧标签（不标日语、不说用繁体）",
+     '                        return "japanese" if sample_fallback(path) else "missing"',
+     '                        return "missing"   # 注入：退回旧行为',
+     "字体选择器"),
+    (FPK, "run_functional_probe.py", "墨迹不再压进框（框封顶后墨迹越框）",
+     "        gw = ink_draw_w(gw, rw, pl)",
+     "        pass                           # 注入：不压进框",
+     ("汉化包：DDS 逐字复核墨迹矩形 == 解析模型", "汉化包：.ini 布局满足原版不变量")),
+    # ㉒㉓㉔ 构建器（2026-09-14 用户口径："构建器，在切换标记的时候，序号也要自动改。还有，滚动条呢？"）
+    (BG, "run_build_probe.py", "切标记不再同步序号（退回上一个标记的号）",
+     "        self.var_marker_manual = True\n        self._sync_seq_to_channel()",
+     "        self.var_marker_manual = True",
+     "GUI：切换标记时序号跟着这个标记走"),
+    (BG, "run_build_probe.py", "去掉版本号的 trace（改版本不再重算序号）",
+     '        self.var_version.trace_add("write", lambda *a: self._on_version_edit())',
+     '        pass   # 注入：去掉版本号 trace',
+     "GUI：改版本号（新键）时序号按新键重算"),
+    (BG, "run_build_probe.py", "构建输出退回只有竖条（wrap=none 的长行尾巴拖不到）",
+     'LogBox(log_lf, height=16, wrap="none", hbar=True)',
+     'LogBox(log_lf, height=16, wrap="none")',
+     "GUI：构建输出（wrap=none）有横向滚动条"),
 ]
 
 
@@ -115,6 +185,9 @@ def sha(b):
 
 
 def main():
+    # 可选：命令行给若干个"名字子串"→ 只跑命中的注入。全跑一遍要十几分钟（每条都跑整份探针），
+    # 改一条锁时只跑自己那几条就够；**不带参数 = 全跑**（提交前/大改后照旧全跑）。
+    only = [a for a in sys.argv[1:] if a.strip()]
     for p in TARGETS:
         if not os.path.isfile(p):
             print("[SKIP] 缺文件（闭源/未在工作区）：%s" % p)
@@ -124,8 +197,12 @@ def main():
     for p in TARGETS:
         print("%s sha256=%s bytes=%d" % (os.path.basename(p), orig_sha[p], len(orig[p])))
     bad = 0
+    ran = 0
     try:
         for target, probe, name, old, new, expect in INJECTIONS:
+            if only and not any(a in name for a in only):
+                continue
+            ran += 1
             text = orig[target].decode("utf-8")
             n = text.count(old)
             if n != 1:
@@ -155,8 +232,9 @@ def main():
                   % (probe, p.returncode, tail[-1] if tail else "(无汇总)"))
             for ln in fails:
                 print("    " + ln)
-            hit = any(expect in ln for ln in fails)
-            print("    %s 目标锁变红: %s" % ("[OK]" if hit else "[!!]", expect))
+            exprs = expect if isinstance(expect, (tuple, list)) else (expect,)
+            hit = any(e in ln for ln in fails for e in exprs)
+            print("    %s 目标锁变红: %s" % ("[OK]" if hit else "[!!]", " | ".join(exprs)))
             if not hit:
                 bad += 1
             if p.returncode == 0:
@@ -176,7 +254,9 @@ def main():
                                       "一致" if now == orig_sha[p] else "不一致!!"))
             if now != orig_sha[p]:
                 bad += 1
-    print("\n注入验证结果: %s" % ("全部符合预期" if bad == 0 else "%d 处不符合预期" % bad))
+    print("\n注入验证结果: %s（跑了 %d/%d 条）"
+          % ("全部符合预期" if bad == 0 else "%d 处不符合预期" % bad,
+             ran, len(INJECTIONS)))
     return 1 if bad else 0
 
 

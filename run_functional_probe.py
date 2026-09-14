@@ -782,7 +782,24 @@ def test_font_pack(tmp):
             return tbl[ord(ch)]
         if _ud.east_asian_width(ch) in "FW" or ch in FP.FORCED_FULLWIDTH:
             return FP.BLOCK_WIDTHS.get(rsize, rsize + 2)
-        return max(1, round(fobj.getlength(ch) / S) + 1)
+        # ★ 与实现同步的**封顶**（2026-09-14 修，同样是"有意改写"）：表外的字按 advance+1
+        #   现算，实测 msyh 的 U+2116「№」在槽位 23/25 得 34/37，而 cell 只有 33/35 ——
+        #   框宽超过 cell 就是伸进邻格采样框。实现侧 widths_of 现在 `min(rw, cell)`。
+        #   口径来源（可复核）：三个参照包逐条扫描，框宽 > cell 的记录数 = 0 / 0 / 0。
+        return min(max(1, round(fobj.getlength(ch) / S) + 1), FP.cell_height_for(rsize))
+
+    # ★ 锁的**有意改写**（2026-09-14，配合"按墨迹定标"修复）：实现侧的渲染字号不再等于
+    #   槽位名 `rsize`，而是 `FP.fit_render_size(...)` 定标出来的 `fitted`（见 font_pack.py
+    #   里 fit_render_size 的说明：某一轮把 CELL/BLOCK 换成 1.3× 的大格子却仍然按槽位名
+    #   渲染 → 字比格子小约 30%）。下面的模型如果要独立，就得自己再抄一份定标规则 ——
+    #   那只会抄出第二个真相。所以：**定标规则本身单独上锁**（"墨迹定标锁"：样本最大墨迹
+    #   高必须落在 [cell−7, cell−4]、墨迹宽 ≤ 推进宽，且放大一档必越界），模型这边只复用
+    #   同一个 fitted，专心复核"拿到字号之后的布局/贴图/裁剪"。
+    def _model_font(font_path, rsize, x2):
+        from PIL import ImageFont
+        S = 2 if x2 else 1
+        return ImageFont.truetype(
+            font_path, FP.fit_render_size(font_path, rsize, bool(x2)) * S)
 
     # 布局不变量：这些性质是从**原版成品**（汉化包生成工具2024 的 ui_font_NN_chs.ini，
     # 10 个尺寸 × 3428 行）实测反推出来的，逐条对上才算与既有汉化包几何一致：
@@ -795,7 +812,6 @@ def test_font_pack(tmp):
     # 钉住这些，几何被改动会立刻变红，而不是等到成品进游戏才发现。
     def _ini_layout_invariant():
         import re as _re
-        from PIL import ImageFont
         inis = [p for p in produced if p.lower().endswith(".ini")]
         assert inis, "包里没有 .ini"
         line_re = _re.compile(r"^(\d+)\s*=\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*$")
@@ -807,7 +823,7 @@ def test_font_pack(tmp):
             slot = int(m.group(1))
             cell = FP.CELL_HEIGHTS[slot]
             S = 2 if x2_by_slot[slot] else 1
-            fobj = ImageFont.truetype(font, slot * S)
+            fobj = _model_font(font, slot, x2_by_slot[slot])
             section, height, rows = None, None, 0
             for ln in open(p, encoding="ascii"):
                 s = ln.strip()
@@ -835,6 +851,8 @@ def test_font_pack(tmp):
                     pl, rw_exp = FP.punct_box_px(_ch, rw0, _left, _gw)
                     # 与 render_font 同一条"框不得窄于墨迹"的下限（共用库函数，不各算一遍）
                     rw_exp = FP.clamp_box_to_ink(pl, rw_exp, _gw)
+                    # 同一条"框宽 ≤ cell"的封顶（共用库函数调用点，见 render_font）
+                    rw_exp = min(rw_exp, cell)
                     assert w == rw_exp, \
                         "%s 框宽与申报的收窄不自洽: %r (rw0=%d pl=%d 期望宽=%d)" % (
                             base, s, rw0, pl, rw_exp)
@@ -853,6 +871,195 @@ def test_font_pack(tmp):
 
     check("汉化包：.ini 布局满足原版不变量（height=cell / 正方形槽 / 水平居中）",
           _ini_layout_invariant)
+
+    def _ink_fit_lock():
+        """墨迹定标锁：`fit_render_size` 必须把字**放到格子的上限**，且不越界。
+
+        这是用户报「字比格子小、观感偏小」的那条回归的落地判据（2026-09-14）：
+        格子表（CELL_HEIGHTS/BLOCK_WIDTHS）在某一轮被换成 1.3× 的目标实测值，
+        渲染字号却仍按槽位名 → 字比格子小约 30%。锁三件事：
+          ① **上限**：定标后的样本最大墨迹高 ≤ cell−4、每个字墨迹宽 ≤ 推进宽
+             （推进宽就是引擎采样框 [x1,x2)，相邻框首尾相接，"墨迹正好填满框"是安全的）；
+          ② **贴满**：样本最大墨迹高 ≥ cell−7 —— 阈值取自**参照包实测**
+             （汉化包生成工具2024 + 它自带的 msyh：各槽位 cell−5…−7）。按槽位名渲染的
+             旧行为（slot 11 ~10/20、slot 25 ~23/35）必红；我第一版"给宽度多留 2px
+             余量"那版（余量 7–8px：slot 15 是 16、参照是 17）同样必红。
+          ③ **最大性**：若还能再加一档（fitted+1 依然合法）则定标退化，报错 ——
+             防止将来有人把搜索范围写成 `range(size, size+1)` 之类"看着像定标"的东西。
+        """
+        from PIL import ImageFont
+        sample = "永你好汉化测试这说们书见风阳光束类型"
+        rows = []
+        for size, x2 in FP.SIZES:
+            S = 2 if x2 else 1
+            cell = FP.cell_height_for(size)
+            fitted = FP.fit_render_size(font, size, bool(x2))
+            assert fitted >= size, (
+                "slot %d 定标反而变小（%d → %d）" % (size, size, fitted))
+
+            def violations(sz):
+                # 样本必须与实现的 FIT_SAMPLE **逐字相同**：定标是按"样本里每个字都合法"
+                # 停下的，若这里少算了标点（标点的推进宽窄、先触发宽度上限），就会把
+                # 合法的 fitted+1 判成"也该停"，从而误报定标退化。
+                fo = ImageFont.truetype(font, sz * S)
+                out = []
+                for ch in FP.FIT_SAMPLE:
+                    mb = fo.getmask(ch, mode="L").getbbox()
+                    if mb is None:
+                        continue
+                    ih = (mb[3] - mb[1]) // S
+                    iw = (mb[2] - mb[0]) // S
+                    rw = FP.rect_w_for(size, ch)
+                    if rw is not None:
+                        rw = min(rw, cell)     # 与 widths_of 同一条封顶
+                    if ih > cell - 4:
+                        out.append(("高", ch, ih, cell - 4))
+                    elif rw is not None and iw > rw:
+                        out.append(("宽", ch, iw, rw))
+                return out
+
+            over = violations(fitted)
+            assert not over, (
+                "slot %d（cell=%d）定标字号 %d 仍越界：%r" % (size, cell, fitted, over[:3]))
+            fo = ImageFont.truetype(font, fitted * S)
+            ink_h = [(fo.getmask(ch, mode="L").getbbox()[3]
+                      - fo.getmask(ch, mode="L").getbbox()[1]) // S
+                     for ch in sample if fo.getmask(ch, mode="L").getbbox() is not None]
+            assert ink_h, "字体 %s 在 slot %d 一个中文字形都没有" % (
+                os.path.basename(font), size)
+            mx = max(ink_h)
+            # 阈值 cell−7 取自**参照包实测**（汉化包生成工具2024 + 它自带的 msyh.ttf：
+            # 各槽位墨迹高 = cell−5…−7）。松一格就抓不住"多留 2px 余量"那版（7–8px）。
+            assert mx >= cell - 7, (
+                "slot %d 墨迹只占 %d/%d（参照包是 cell−5…−7；≈旧行为：按槽位名渲染，"
+                "或给宽度多留了余量）" % (size, mx, cell))
+            if fitted < size + 13:
+                assert violations(fitted + 1), (
+                    "slot %d fitted=%d 不是最大可用档（+1 也合法）→ 定标退化"
+                    % (size, fitted))
+            rows.append((size, cell, fitted - size, mx))
+        print("  墨迹定标：槽位/cell/放大档/最大墨迹高 = %r" % (rows,))
+
+    if has_cjk:
+        check("汉化包：墨迹按格子定标（贴满上限、不越界、且为最大可用档）",
+              _ink_fit_lock)
+    else:
+        skip("汉化包：墨迹按格子定标", "字体 %s 缺中文字形" % os.path.basename(font))
+
+    def _atlas_height_covers_bands():
+        """贴图画布高必须 ≥ 行带总高 `max_y`（= 行数 × cell）。
+
+        引擎按 `[y1, y1+height)` 采样（height=cell），最后一行的行号是 `max_y-1`；
+        画布只要少一行，Pillow 的 `paste` 就把那一行**静默丢掉**（不报错、不计数），
+        引擎再采到贴图外面 —— 用户报的「所有字的底部一丢丢边被吞」就含这条。
+        实测触发条件很窄但真实：旧写法 `need = max_y - 1`，在 max_y-1 恰好是 2 的幂时
+        正好少一行 —— slot 23（cell 33、单行）→ need=32 → tex_h=32 < max_y=33，
+        该槽位的 '(' ')' '[' ']' 墨迹正好填满行带，底部一整行像素在成品 DDS 里没有。
+        """
+        bad = []
+        for size, x2 in FP.SIZES:
+            for off in (0, 9):
+                rsize = size + off
+                _d, _ini, _tw, th, my = FP.render_font("永", font, rsize, x2, "A8")
+                if th < my:
+                    bad.append((size, off, rsize, th, my))
+        assert not bad, ("贴图画布比行带还矮（最后一行像素会被 paste 静默丢掉、"
+                         "引擎采样越出贴图）：%r" % (bad[:4],))
+
+    check("汉化包：字库画布高 ≥ 行带总高（最后一行不被静默丢）",
+          _atlas_height_covers_bands)
+
+    # ── 简→繁 替换（用户口径 2026-09-14："日语的…那些缺简体的就上繁体"）──
+    def _st_fallback_table_scope():
+        """替换表的口径：只收"繁体里**不**照用原字"的条目。
+
+        收录错了比不收录更糟：`干/后/里/台/表/丑/只` 这些字在繁体里**照用原形**，
+        若按"简化字→繁体字"一刀切，会把本来正确的字形换成错字（干→幹）。所以派生
+        规则是"繁体候选里含原字 → 不收录"（见 st_fallback.json 的 _transform）。
+        本锁把这条口径钉在**数据文件**上：它被重生成/手改坏了，这里先红。
+        """
+        assert len(FP.ST_FALLBACK) > 2000, "简繁表条目过少：%d" % len(FP.ST_FALLBACK)
+        for s, t in (("汉", "漢"), ("测", "測"), ("说", "說"), ("们", "們"),
+                     ("书", "書"), ("见", "見"), ("风", "風"), ("这", "這")):
+            assert FP.ST_FALLBACK.get(s) == t, "简繁表 %s 应为 %s，实为 %r" % (
+                s, t, FP.ST_FALLBACK.get(s))
+        for s in "干后里台表丑只":
+            assert s not in FP.ST_FALLBACK, (
+                "%r 在繁体里照用原形，**不得**收进替换表（会把对的换成错的）" % s)
+        for k, v in FP.ST_FALLBACK.items():
+            assert len(k) == 1 and len(v) == 1, "非单字条目: %r→%r" % (k, v)
+
+    check("汉化包：简繁替换表只收「繁体不照用原字」的条目（干/后/里/台… 必须排除）",
+          _st_fallback_table_scope)
+
+    _JPAN = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts",
+                         "hpsimplifiedjpan-regular.ttf")
+
+    def _jpan_missing_simplified_gets_traditional():
+        """缺简体字形的字体：那些字必须用**繁体**字形补进图集（不是留空白）。
+
+        判据（真渲染 + 真量像素，不是查表自觉）：
+          ① 9 个样本字在 hpsimplifiedjpan 里**原字确实画不出**（`getbbox() is None`），
+             繁体替代**画得出** —— 这条保证下面的墨迹只可能来自替换；
+          ② `render_font` 单字渲染后，成品 DDS 里该字所在框内**有墨迹**；
+          ③ ini 的键仍是**原码位**（引擎按原码位查表，键换了就等于没补）；
+          ④ 对全字形字体（msyh）：把替换表临时清空后产物**逐字节相同** —— 证明这条
+             逻辑对"字体本来就不缺字"的情况零影响（不改变既有产物）。
+        """
+        from PIL import Image
+        if not os.path.isfile(_JPAN):
+            skip("汉化包：缺简体时用繁体补", "本机没有 hpsimplifiedjpan-regular.ttf")
+            return
+        from PIL import ImageFont as _PIF
+        from toolkit_platform import system_font_dirs
+        rich = None
+        for d in system_font_dirs():
+            for n in ("msyh.ttc", "msyh.ttf", "simsun.ttc"):
+                p = os.path.join(d, n)
+                if os.path.isfile(p):
+                    rich = p
+                    break
+            if rich:
+                break
+        sample = "汉测试说们书见风这"
+        jf = _PIF.truetype(_JPAN, 40)
+        checked = 0
+        unfixable = []
+        for ch in sample:
+            alt = FP.ST_FALLBACK.get(ch)
+            assert jf.getmask(ch).getbbox() is None, (
+                "%s 在日文字体里居然有字形 —— 这条锁的样本选错了" % ch)
+            if alt is None or jf.getmask(alt).getbbox() is None:
+                # ★ 现实：**繁体候选本身也可能不在日文字体里**（說 U+8AAA 就不在：
+                #   日本用新字体 説 U+8AAC）。这类字不归"简繁替换"管（要修得再上一层
+                #   日文新字体表），所以这里只登记、不断言 —— 打印出来让人看见残留。
+                unfixable.append("%s→%s" % (ch, alt))
+                continue
+            data, ini, tw, th, _my = FP.render_font(ch, _JPAN, 15, 0, "A8")
+            assert ("%05d=" % ord(ch)) in ini, (
+                "补字后的 ini 键必须是**原码位** %d：%r" % (ord(ch), ini.splitlines()[2:3]))
+            assert ("%05d=" % ord(alt)) not in ini, (
+                "不该给繁体码位另开一行（引擎只会按原码位查）")
+            assert Image.frombytes("L", (tw, th), data).getbbox() is not None, (
+                "%s（缺简体字形）补完仍是空白 —— 用户要的「缺简体的就上繁体」没落地" % ch)
+            checked += 1
+        assert checked >= 6, "只验证了 %d 个字，这条锁等于没跑（可补样本太少）" % checked
+        if rich:
+            _saved = FP.ST_FALLBACK
+            try:
+                FP.ST_FALLBACK = {}
+                off = FP.render_font(sample + "ABC", rich, 15, 0, "A8")[0]
+            finally:
+                FP.ST_FALLBACK = _saved
+            on = FP.render_font(sample + "ABC", rich, 15, 0, "A8")[0]
+            assert on == off, (
+                "全字形字体（%s）的产物被简繁替换改变了 —— 对不缺字的字体必须零影响"
+                % os.path.basename(rich))
+        print("        简繁替换：实测出墨迹 %d 字；繁体候选在日文字体里也缺（本例残留）：%s"
+              % (checked, "、".join(unfixable) or "无"))
+
+    check("汉化包：字体缺简体字形时用繁体字形补（码位不变、全字形字体零影响）",
+          _jpan_missing_simplified_gets_traditional)
 
     # ══════════════════════════════════════════════════════════
     # 墨迹必须落在自己那一格：水平（标点收窄）与垂直（行带 / 槽位高）
@@ -885,14 +1092,13 @@ def test_font_pack(tmp):
         即用户报的"所有字的底部一丢丢边被吞"）。只锁下沿的旧写法在新的"整体上移"兜底
         下会恒真，所以改成锁这个。
         """
-        from PIL import ImageFont
         worst = None
         for size, x2 in FP.SIZES:
             S = 2 if x2 else 1
             for off in (0, 3, 5, 7, 9):        # GUI「尺寸」的全部档位
                 rsize = size + off
                 cell = FP.cell_height_for(rsize)
-                fobj = ImageFont.truetype(font, rsize * S)
+                fobj = _model_font(font, rsize, x2)
                 asc, desc = fobj.getmetrics()
                 vs = max(0, cell - (asc + desc) // S)
                 for ch in chars:
@@ -923,7 +1129,7 @@ def test_font_pack(tmp):
         画的是 .notdef 方框，方框宽窄与标点本身无关。
         """
         import re as _re
-        from PIL import Image, ImageFont
+        from PIL import Image
         punct = "".join(sorted(FP.PUNCT_OPEN | FP.PUNCT_CLOSE
                                | FP.PUNCT_SINGLE | FP.PUNCT_WIDE))
         rx = _re.compile(r"^(\d+)\s*=\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*$",
@@ -937,7 +1143,7 @@ def test_font_pack(tmp):
             S = 2 if x2 else 1
             for off in (0, 3, 5, 7, 9):
                 rsize = size + off
-                fobj = ImageFont.truetype(font, rsize * S)
+                fobj = _model_font(font, rsize, x2)
                 notdef = fobj.getmask("\ue123", mode="L").getbbox()
                 for ch in punct:
                     mb = fobj.getmask(ch, mode="L").getbbox()
@@ -995,7 +1201,7 @@ def test_font_pack(tmp):
         那是宽度表的老问题，与标点收窄无关（报告里单独给了数字）。
         """
         import re as _re
-        from PIL import Image, ImageFont
+        from PIL import Image
         punct = "".join(sorted(FP.PUNCT_OPEN | FP.PUNCT_CLOSE
                                | FP.PUNCT_SINGLE | FP.PUNCT_WIDE))
         rx = _re.compile(r"^(\d+)\s*=\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*$",
@@ -1008,7 +1214,7 @@ def test_font_pack(tmp):
             for off in (0, 9):
                 rsize = size + off
                 cell = FP.cell_height_for(rsize)
-                fobj = ImageFont.truetype(font, rsize * S)
+                fobj = _model_font(font, rsize, x2)
                 for ch in chars:
                     bb = fobj.getbbox(ch)
                     mask = fobj.getmask(ch, mode="L")
@@ -1032,6 +1238,11 @@ def test_font_pack(tmp):
                     # 水平：框起点左移 pl，墨迹贴到 x1+pl（pl 由 punct_box_px 裁决）
                     _rw0m = _indep_rw0(fobj, rsize, S, ch)
                     pl, _rwm = FP.punct_box_px(ch, _rw0m, left, gw)
+                    # 与实现同序的三步：抬框（不裁墨）→ 封顶到 cell → 横向压进框。
+                    # 三步都调**库里同一个函数**，所以模型不会和实现漂移。
+                    _rwm = FP.clamp_box_to_ink(pl, _rwm, gw)
+                    _rwm = min(_rwm, cell)
+                    gw = FP.ink_draw_w(gw, _rwm, pl)
                     # 期望值：独立重走一遍 render_font 的贴图流程（见 docstring）
                     sub = Image.frombytes("L", mask.size, bytes(mask)).crop(mb)
                     if S > 1:
@@ -1085,7 +1296,6 @@ def test_font_pack(tmp):
         样例刻意带上这些已知比表值宽的字符。
         """
         import re as _re2
-        from PIL import ImageFont
         rx2 = _re2.compile(r"^(\d+)\s*=\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,",
                            _re2.M)
         samples = ["\u0483", "\u0484", "\u0485", "\u0486", "\u00ad", "_", "i",
@@ -1093,7 +1303,7 @@ def test_font_pack(tmp):
         bad = []
         for rsize, x2f in ((11, False), (15, False), (23, True)):
             S = 2 if x2f else 1
-            f = ImageFont.truetype(font, rsize * S)
+            f = _model_font(font, rsize, x2f)
             for ch in samples:
                 mb = f.getmask(ch, mode="L").getbbox()
                 if mb is None:

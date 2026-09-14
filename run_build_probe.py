@@ -1100,6 +1100,98 @@ def test_build_gui_construction():
         check("GUI：手动模式显式传标记（含空串=无标记）",
               _manual_mode_passes_marker_verbatim)
 
+        # ── 2026-09-14 用户口径「构建器，在切换标记的时候，序号也要自动改」──
+        def _marker_pick_syncs_seq():
+            """切换标记 → 序号**跟着这个标记走**（各数各的号）。
+
+            键是 (完整版本串, 标记名)：ALPHA 数到 33、BETA 可能还在 2。旧实现把上一个
+            标记的号原样留在框里，于是 ALPHA→BETA 给出"BETA.7"这种从没发过的号。
+            判据：走真实的那条回调（下拉的 `<<ComboboxSelected>>` 绑的就是它），
+            序号必须等于 `VER.next_prerelease(tag=新标记)` 的 peek 值；为了证明不是
+            "碰巧相等"，先塞一个**与期望值必然不同**的残留号。
+            """
+            assert app.cb_channel.bind("<<ComboboxSelected>>"), "下拉没有绑定选择事件"
+            base = app.var_version.get() or None
+            want = _V.split_prerelease(
+                _V.next_prerelease(tag="BETA", base_version=base, consume=False))[1]
+            assert want, "拿不到 BETA 的下一个号，这条锁等于没跑"
+            app.var_seq.set(str(int(want) + 100))    # 冒充"上一个标记留下的号"
+            app.var_channel.set("BETA")
+            app._on_marker_pick()                    # = <<ComboboxSelected>> 的回调
+            assert app.var_seq.get() == str(want), \
+                "切到 BETA 后序号应是 BETA 自己的号 %r，实际 %r" % (want, app.var_seq.get())
+            # 选「无」：没有序号可用 → 回到 1（不许残留上一个标记的号）
+            app.var_channel.set("无")
+            app._on_marker_pick()
+            assert app.var_seq.get() == "1", app.var_seq.get()
+            assert app._marker_args() == ["--prerelease", ""], app._marker_args()
+        check("GUI：切换标记时序号跟着这个标记走（各数各的号）",
+              _marker_pick_syncs_seq)
+
+        def _version_edit_resyncs_seq():
+            """版本号也是键的一半：自动模式下改版本 → 序号按新键重算（从 .1 起）。
+
+            用 9.9.9 这种仓库里没有的键（同 §4 计数用例的理由）：仓库已保存的
+            1.0.1|ALPHA=9 / 1.1.0|ALPHA=32 会给同键留下"序号下限"，拿 1.1.x 测就变成
+            依赖仓库当前状态。手动模式下**绝不动**手填的号 —— 那正是"手动优先"。
+            """
+            app.var_marker_manual = False
+            app.var_channel.set("ALPHA")
+            app.var_seq.set("9")
+            app.var_marker_manual = False            # `_on_seq_edit` 会把它置 True
+            app.var_version.set("9.9.9")             # 新键 → ALPHA 从 .1 重来
+            assert app.var_seq.get() == "1", \
+                "新版本键下序号应从 1 重来，实际 %r" % app.var_seq.get()
+            assert "9.9.9" in app.lbl_preview.cget("text"), app.lbl_preview.cget("text")
+            # 手动模式：改版本号只刷新预览/计数行，**不动**用户手填的号
+            app.var_marker_manual = True
+            app.var_seq.set("5")
+            app.var_version.set("9.9.8")
+            assert app.var_seq.get() == "5", \
+                "手动模式不该改用户手填的号，实际 %r" % app.var_seq.get()
+            assert app._marker_args() == ["--prerelease", "ALPHA.5"], app._marker_args()
+        check("GUI：改版本号（新键）时序号按新键重算；手动模式不动手填的号",
+              _version_edit_resyncs_seq)
+
+        def _log_has_hbar():
+            """构建输出是 `wrap="none"`：长行的尾巴必须**拖得到**（用户口径 2026-09-14）。
+
+            现象（真窗口实测）：只有竖条时 `log.xview()=(0.0, 0.06)` —— 94% 的行宽
+            看得见却没有任何可拖的东西（"还有，滚动条呢？"）。判据三条，全是实测：
+              ① 同一个容器里横竖各一条 AutoScrollbar；
+              ② 文本滚动 → 条子跟上（xscrollcommand 真接着），拖条子 → 文本真横移；
+              ③ 条子有几何管理器且有真实尺寸（不是 1x1 的假可见）。
+            """
+            from toolkit_widgets import AutoScrollbar as _ASB
+            log = app.log
+            assert str(log.cget("wrap")) == "none", log.cget("wrap")
+            bars = [w for w in log.master.winfo_children() if isinstance(w, _ASB)]
+            hs = [b for b in bars if str(b.cget("orient")) == "horizontal"]
+            vs = [b for b in bars if str(b.cget("orient")) == "vertical"]
+            assert len(hs) == 1 and len(vs) == 1, \
+                "构建输出的滚动条不齐（横 %d / 竖 %d）：%r" % (len(hs), len(vs), bars)
+            log.add("LONG-" + "x" * 4000)
+            log._flush()
+            app.root.update_idletasks()
+            assert log.xview()[1] < 1.0, "内容没有横向溢出，这条锁等于没跑：%r" % (log.xview(),)
+            # ②-a 文本 → 条子
+            log.xview_moveto(1.0)
+            app.root.update_idletasks()
+            assert abs(hs[0].get()[1] - log.xview()[1]) < 1e-6, \
+                "横条没跟上文本：条子 %r，文本 %r" % (hs[0].get(), log.xview())
+            # ②-b 条子 → 文本（条子的 command 就是文本的 xview）
+            cmd = str(hs[0].cget("command"))
+            assert cmd, "横条的 command 没接上"
+            app.root.tk.call(cmd, "moveto", 0.0)
+            app.root.update_idletasks()
+            assert log.xview()[0] == 0.0, \
+                "拖横条没能把文本移回去：%r" % (log.xview(),)
+            # ③ 真的布局出来了（有管理器 + 真实尺寸）
+            assert hs[0].winfo_manager() == "pack", hs[0].winfo_manager()
+            assert hs[0].winfo_width() > 1, hs[0].winfo_width()
+        check("GUI：构建输出（wrap=none）有横向滚动条且真接线",
+              _log_has_hbar)
+
         # 上面几条把标记切成了"手动"；后面还有预览/解析用例，先还原成"打开构建器
         # 时的样子"（自动模式 + 已保存值），免得几条用例互相影响。
         app.var_marker_manual = False

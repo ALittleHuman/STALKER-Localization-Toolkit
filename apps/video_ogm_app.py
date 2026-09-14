@@ -1,71 +1,52 @@
 # -*- coding: utf-8 -*-
 """OGM 视频转换 App (VideoOGMApp)."""
 from apps._bootstrap import (
-    os, sys, re, threading, subprocess, json, glob, dataclass, field, Path, Optional, tk,
+    os, sys, re, threading, subprocess, json, dataclass, field, Path, Optional, tk,
     ttk, filedialog, messagebox
 )
 
 from toolkit import (
     color, tool_header, SplitPane, _make_pump, TaskRunner, status_style_name,
     HOST_VIDEO, AREA_TOP_BAR, T, drop_zone, _HAS_DND, errbox, log_summary, log_detail,
-    plugin_slot_bar, plugin_options_area,
-    locate_exe, hidden_kwargs, load_user_value, save_user_values
+    plugin_slot_bar, plugin_options_area, dialog_window,
+    app_dir, hidden_kwargs, load_user_value, save_user_values
 )
 
 # 手动指定的 ffmpeg/ffprobe 记在**共用的** user.ltx 里（[ffmpeg] 段），
 # 不单独开 video_ogm_tool.cfg.json —— 见 toolkit_platform 的说明。
-# 只有"手动设置"会写这里；自动查找的结果不落盘。
+# 只有"手动设置"会写这里；从程序目录读到的结果不落盘。
 _CFG_SECTION = "ffmpeg"
 
 
 def find_ffmpeg() -> tuple[Optional[str], Optional[str]]:
-    """定位 ffmpeg / ffprobe。
+    """定位 ffmpeg / ffprobe —— **只认两处**（用户口径，2026-09-14）。
 
-    优先级：
+    用户原话："ffmpeg不用检不检测，直接读目录下的就行，读不到再跳出窗口让用户手动选择。"
+
       1. `user.ltx` 的 `[ffmpeg] path/probe` —— **只**由"设置 ffmpeg"手动写入，
          是用户的显式意图，所以排在最前；
-      2. 应用目录（`app_dir()`）—— 发行版里 `build.py` 已把 ffmpeg.exe /
-         ffprobe.exe 复制到 exe 旁；源码版里 `download_ffmpeg.py` 下到项目根，
-         两者都等于 `app_dir()`；
-      3. `extra_dirs`（常见安装位置）；
-      4. PATH。
-      另外 ffmpeg 在用户没手动指定时优先用 imageio-ffmpeg 的 7.1
-      （8.x 的 theora 编码器有 bug）。
+      2. **程序目录**（`app_dir()`）下的 `ffmpeg.exe` / `ffprobe.exe` —— 发行版里
+         `build.py` 会把它们复制到 exe 旁；源码版 `download_ffmpeg.py` 下到项目根，
+         两者都等于 `app_dir()`。
 
-    自动查找的结果**不写回** user.ltx：既然每一步都能重新算出同样的答案，
-    缓存就只是冗余，还会让陈旧记录压过随包发布的二进制。
+    这里**不再**搜 PATH / 常见安装目录，也**不再** import imageio-ffmpeg：那些
+    "到处找"的路径正是启动变慢（冻结包里 ~373 ms）与"到底用了哪个 ffmpeg 说不清"
+    的来源。读不到就返回 (None, None)，由调用方弹出小窗口 —— 里面有「自动安装」与
+    「手动选择」两个按钮（用户口径："ffmpeg自动安装的按钮放在弹窗里。"）。
+
+    版本安全性：程序目录里的二进制是 `download_ffmpeg.py` **校验过**才落下的
+    （它显式拒绝 ffmpeg 8.x —— 8.x 的 theora 编码器对 STALKER OGM 有 bug），
+    实测本目录是 `7.1-essentials_build`，与原先被优先使用的 imageio 7.1 同一版本线。
     """
-    # ── 0. imageio-ffmpeg（7.1 的 theora 编码器无 8.x 的 bug；它只带 ffmpeg）──
-    imageio_ffmpeg_path = None
-    try:
-        import imageio_ffmpeg
-        iexe = imageio_ffmpeg.get_ffmpeg_exe()
-        if iexe and os.path.isfile(iexe):
-            imageio_ffmpeg_path = iexe
-    except Exception:
-        pass
-
-    extra = [r"C:\ffmpeg\bin", r"C:\Program Files\ffmpeg\bin", r"C:\tools\ffmpeg\bin",
-             r"%USERPROFILE%\scoop\apps\ffmpeg\current\bin", r"%USERPROFILE%\scoop\shims",
-             os.path.dirname(sys.executable)]
-    # 也搜索 E:/Software/Tools 下的 ffmpeg 目录
-    try:
-        extra += glob.glob(r"E:\Software\Tools\FFmpeg\*\bin")
-    except Exception:
-        pass
-
-    # 手动指定过、且文件还在（否则视为失效，继续往下自动找）
     user_ffmpeg = load_user_value(_CFG_SECTION, "path")
     user_ffprobe = load_user_value(_CFG_SECTION, "probe")
     manual_ffmpeg = user_ffmpeg if (user_ffmpeg and os.path.isfile(user_ffmpeg)) else None
     manual_ffprobe = user_ffprobe if (user_ffprobe and os.path.isfile(user_ffprobe)) else None
 
-    ffmpeg_exe = manual_ffmpeg or locate_exe("ffmpeg", extra_dirs=extra)
-    ffprobe_exe = manual_ffprobe or locate_exe("ffprobe", extra_dirs=extra)
-
-    # 用户手动指定过就尊重它（原实现在这里无条件覆盖，手动选的 ffmpeg 白存了）
-    if manual_ffmpeg is None and imageio_ffmpeg_path:
-        ffmpeg_exe = imageio_ffmpeg_path
+    local_ffmpeg = os.path.join(app_dir(), "ffmpeg.exe")
+    local_ffprobe = os.path.join(app_dir(), "ffprobe.exe")
+    ffmpeg_exe = manual_ffmpeg or (local_ffmpeg if os.path.isfile(local_ffmpeg) else None)
+    ffprobe_exe = manual_ffprobe or (local_ffprobe if os.path.isfile(local_ffprobe) else None)
     return ffmpeg_exe, ffprobe_exe
 
 
@@ -448,21 +429,26 @@ class VideoOGMApp:
     """
 
     def __init__(self, parent):
-        ffmpeg_exe, ffprobe_exe = find_ffmpeg()
-        self.ffmpeg = ffmpeg_exe
-        self.ffprobe = ffprobe_exe
-        self.converter = Converter(ffmpeg_exe, ffprobe_exe) if ffmpeg_exe and ffprobe_exe else None
+        # ★ 构造期**不探测** ffmpeg（2026-09-14 改惰性）。为什么值这一刀：
+        #   原来的 `find_ffmpeg()` 会到处找（PATH / 常见目录 / imageio-ffmpeg），
+        #   在冻结包里要 ~373 ms（大头是 `import imageio_ffmpeg`），而 Hub 启动会
+        #   **一次性构造全部 6 个 App** —— 用户看到的就是"打开就卡一下"。
+        #   探测推迟到**真正要用**时：选/拖源文件、选参考 OGM、点转换（见 _ensure_ffmpeg）。
+        #   ★ 探测口径也变了（用户 2026-09-14 定）：**只读程序目录**，读不到就弹窗口
+        #     让用户手动选 —— 见 find_ffmpeg 的 docstring。现在一次探测只是
+        #     "两次 os.path.isfile + 一次 user.ltx 读"；保持惰性是为了启动那一刻
+        #     连这点开销和弹窗都不发生。
+        #   在此之前状态栏显示 "ffmpeg 未检测" —— 不是 ✗（那会谎报"找不到"）。
+        self.ffmpeg = None
+        self.ffprobe = None
+        self.converter = None
+        self._ffmpeg_probed = False
         self.source_path = ""
         self.reference_path = ""
         self.source_info: Optional[VideoInfo] = None
         self.reference_info: Optional[VideoInfo] = None
         self.root = parent
         self.root.configure(bg=color("bg"))
-        if self.converter:
-            log_summary(f"ffmpeg: {self.ffmpeg}", "ok")
-            log_summary(f"ffprobe: {self.ffprobe}", "ok")
-        else:
-            log_summary("ffmpeg/ffprobe 未找到", "warn")
 
         self._ui = _make_pump(self.root)
         self._build_ui()
@@ -475,19 +461,34 @@ class VideoOGMApp:
                 text=text, style=status_style_name(kind)),
         )
 
-        if not ffmpeg_exe:
-            self.root.after(500, self._warn_no_ffmpeg)
-            threading.Thread(target=self._auto_install_ffmpeg, daemon=True).start()
+    def _ensure_ffmpeg(self):
+        """惰性探测 ffmpeg/ffprobe（幂等，只做一次）。返回 converter 是否可用。
 
-    def _warn_no_ffmpeg(self):
-        """只留"怎么办"：原来还有一句"（成功后会写入日志）"，属后台实现细节。
-        自动安装是否成功，用户会直接在底部状态栏看到 ffmpeg ✓ / ✗。"""
-        messagebox.showwarning(
-            "未找到 ffmpeg",
-            "未检测到 ffmpeg/ffprobe。\n\n"
-            "点击底部「设置 ffmpeg」手动选择，\n"
-            "或等待后台自动安装。",
-        )
+        探测口径见 `find_ffmpeg()`：**只读程序目录**（外加用户手动指定的那一对）。
+        读不到就**弹出手动选择窗口**（用户口径："读不到再跳出窗口让用户手动选择"）——
+        不再到处找、也不再后台自动安装。
+
+        失败也置位：否则每点一次按钮都要重弹一次选择窗口。调用方用 `_ffmpeg_probed`
+        判断"这一次是不是我弹的"，避免再叠一层"ffprobe 不可用"的提示。
+        """
+        if self._ffmpeg_probed:
+            return self.converter is not None
+        self._ffmpeg_probed = True
+        ffmpeg_exe, ffprobe_exe = find_ffmpeg()
+        self.ffmpeg = ffmpeg_exe
+        self.ffprobe = ffprobe_exe
+        self.converter = (Converter(ffmpeg_exe, ffprobe_exe)
+                          if ffmpeg_exe and ffprobe_exe else None)
+        if self.converter:
+            log_summary(f"ffmpeg: {self.ffmpeg}", "ok")
+            log_summary(f"ffprobe: {self.ffprobe}", "ok")
+        else:
+            log_summary("程序目录下没有 ffmpeg/ffprobe —— 弹窗让用户选", "warn")
+            # 延到本次事件处理返回之后再弹：拖放入口也在主线程事件里，
+            # 别在拖放回调内部开模态文件框。
+            self.root.after(0, self._offer_ffmpeg_help)
+        self._update_footer()
+        return self.converter is not None
 
     def _build_ui(self):
         MAIN_PADX = 12
@@ -604,10 +605,14 @@ class VideoOGMApp:
         parts = []
         if _HAS_DND:
             parts.append("拖拽 ✓")
-        if self.ffmpeg:
+        if self.converter or self.ffmpeg:
             parts.append("ffmpeg ✓")
-        else:
+        elif self._ffmpeg_probed:
             parts.append("ffmpeg ✗")
+        else:
+            # 还没探测（惰性：探测在第一次真正要用时才做）——如实显示"未检测"，
+            # 不要显示 ✗：那是"找过但没找到"的意思，会谎报。
+            parts.append("ffmpeg 未检测")
         self.footer.configure(text="  |  ".join(parts))
 
     # ── 文件加载 ──
@@ -629,8 +634,8 @@ class VideoOGMApp:
 
         ★ 为什么必须异步：`parse_video_info` 内部是 `subprocess.run(..., timeout=30)`。
         在 UI 线程里跑时，拖入一个大 mkv / 网络盘文件就会白屏最长 30 秒（拖放与「浏览」
-        两条入口都会中）。与 `_auto_install_ffmpeg` 同一套路：工作线程只算，
-        回主线程才碰控件（项目纪律：工作线程连 StringVar.get() 都不许）。
+        两条入口都会中）。工作线程只算、回主线程才碰控件（项目纪律：工作线程连
+        StringVar.get() 都不许）。
         并发保护：同一时刻只允许一次探测，避免连点/连拖堆出一串线程。
         """
         if getattr(self, "_probing", False):
@@ -653,6 +658,15 @@ class VideoOGMApp:
         threading.Thread(target=work, daemon=True).start()
 
     def _on_source(self, path: str):
+        # 惰性探测：动作入口才做（见 __init__ 的说明）。首次探测若读不到程序目录下的
+        # ffmpeg/ffprobe，`_ensure_ffmpeg` 已经弹了"手动选择"窗口 —— 这里不再叠提示。
+        first_probe = not self._ffmpeg_probed
+        if not self._ensure_ffmpeg():
+            if not first_probe:
+                messagebox.showwarning(
+                    "ffmpeg 不可用",
+                    "未找到 ffmpeg/ffprobe。请点击底部「设置 ffmpeg」手动选择。")
+            return
         if not self.ffprobe or not os.path.isfile(self.ffprobe):
             messagebox.showwarning("ffprobe 不可用",
                 "未正确配置 ffprobe。请点击底部「设置 ffmpeg」选择 ffmpeg.exe，\n"
@@ -673,6 +687,14 @@ class VideoOGMApp:
                           lambda err: errbox("解析失败", f"无法解析:\n{path}\n\n{err}"))
 
     def _on_reference(self, path: str):
+        # 同 _on_source：惰性探测 + 首次读不到时由 _ensure_ffmpeg 弹手动选择窗口。
+        first_probe = not self._ffmpeg_probed
+        if not self._ensure_ffmpeg():
+            if not first_probe:
+                messagebox.showwarning(
+                    "ffmpeg 不可用",
+                    "未找到 ffmpeg/ffprobe。请点击底部「设置 ffmpeg」手动选择。")
+            return
         if not self.ffprobe or not os.path.isfile(self.ffprobe):
             messagebox.showwarning("ffprobe 不可用",
                 "未正确配置 ffprobe。请点击底部「设置 ffmpeg」配置。")
@@ -792,6 +814,10 @@ class VideoOGMApp:
         if not self.source_path:
             messagebox.showwarning("缺少源文件", "请先加载源文件。")
             return
+        if self.converter is None:
+            # 惰性探测（正常路径上，选源文件时就已经探过了；这里是兜底与"探针注入了
+            # converter"的兼容：已有 converter 就绝不覆盖它）。见 __init__ 的说明。
+            self._ensure_ffmpeg()
         if not self.converter:
             messagebox.showwarning("ffmpeg 不可用", "未找到 ffmpeg。")
             return
@@ -918,6 +944,8 @@ class VideoOGMApp:
         self.ffmpeg = path
         self.ffprobe = fp
         self.converter = Converter(path, fp)
+        # 手动指定之后就算"探测过了"：本会话不该再去跑一遍自动探测把这个选择顶掉。
+        self._ffmpeg_probed = True
         # 记进共用的 user.ltx（[ffmpeg] 段）；写失败不静默：明确告知"本次可用但不记住"
         if not save_user_values(_CFG_SECTION, {"path": path, "probe": fp}):
             log_summary("警告: 无法写入 user.ltx，下次启动需重新指定 ffmpeg", "warn")
@@ -927,61 +955,147 @@ class VideoOGMApp:
         self._update_footer()
         messagebox.showinfo("完成", f"ffmpeg: {path}\nffprobe: {fp}\n\n已记住，下次启动继续使用。")
 
-    def _auto_install_ffmpeg(self):
-        """后台尝试用 imageio-ffmpeg 提供 ffmpeg/ffprobe。
+    # ── 找不到 ffmpeg 时的处理：小窗口 + 用户点按钮（2026-09-14 用户口径）──
 
-        原实现在 pip 安装分支里直接调用 `imageio_ffmpeg.get_ffmpeg_exe()`，
-        而函数首行的 `import imageio_ffmpeg` 正是**失败**才走到这里 —— 局部名
-        未绑定 → UnboundLocalError，又被最外层 `except Exception: pass` 吞掉。
-        后果：首次运行缺 ffmpeg 时，装完本会话永不生效，必须重启。
-        现在每次都在**装完之后重新 import 一次**，并且失败都写日志。
+    def _offer_ffmpeg_help(self):
+        """程序目录下没有 ffmpeg/ffprobe 时弹的小窗口（**非阻塞**）。
+
+        为什么自建弹窗而不是 messagebox：messagebox 给不了自定义按钮，而这里要
+        **把"自动安装"做成一个按钮** —— 用户原话："ffmpeg自动安装的按钮放在弹窗里。"
+        自动安装因此不再在后台偷偷跑，必须用户点。
+
+        为什么不用 grab_set / wait_window：非阻塞才不会在探针构造与驱动页面时把进程
+        卡住，用户也可以先干别的再回来点。窗口由 `_ensure_ffmpeg` 经
+        `root.after(0, …)` 弹出（免得在拖放回调内部开模态框）。
         """
-        def _exe_from_imageio():
+        try:
+            win = dialog_window(self.root, "未找到 ffmpeg / ffprobe", size="430x165")
+        except Exception as e:
+            # 弹窗都建不出来时退回最直接的路径：直接给手动选择（不静默失败）
+            log_summary(f"帮助弹窗创建失败（{type(e).__name__}: {e}）—— 直接手动选择", "warn")
+            self._open_settings()
+            return
+        ttk.Label(win, text=("程序目录下没有 ffmpeg.exe / ffprobe.exe。\n"
+                             "可以自动安装，或手动指定你已有的那一对。"),
+                  style="Dim.TLabel", justify="left").pack(anchor="w", padx=12, pady=(12, 8))
+        row = ttk.Frame(win)
+        row.pack(anchor="e", padx=12, pady=(0, 12))
+
+        def _pick_auto():
+            win.destroy()
+            self._start_auto_install()
+
+        def _pick_manual():
+            win.destroy()
+            self._open_settings()
+
+        ttk.Button(row, text="自动安装", command=_pick_auto).pack(side="left", padx=(0, 6))
+        ttk.Button(row, text="手动选择", command=_pick_manual).pack(side="left", padx=(0, 6))
+        ttk.Button(row, text="稍后", command=win.destroy).pack(side="left")
+
+    def _start_auto_install(self):
+        """点了"自动安装"之后：工作线程里装，结果回主线程应用（主线程才碰控件）。"""
+        log_summary("开始自动安装 ffmpeg…（可能要下载几百 MB，期间界面可用）", "warn")
+        try:
+            self.task.set_status("正在自动安装 ffmpeg…", "running")
+        except Exception:
+            pass
+        threading.Thread(target=self._auto_install_ffmpeg, daemon=True).start()
+
+    def _auto_install_ffmpeg(self):
+        """**仅在用户点"自动安装"后**在工作线程里跑；只做 IO/子进程，绝不碰控件。
+
+        两条路，先试项目自己的安装器：
+          1. 程序目录下的 `download_ffmpeg.py` —— 本项目**校验过**的安装脚本
+             （显式拒绝 ffmpeg 8.x；ffmpeg 与 ffprobe 一起装到程序目录）。源码版就在手边；
+          2. 退回 imageio-ffmpeg（py 包）：它**只带 ffmpeg、不带 ffprobe**，
+             所以拿到之后还要在同目录找 ffprobe，找不到就如实告诉用户差什么。
+        """
+        pair = self._install_via_script() or self._install_via_imageio()
+        self._ui(self._apply_installed, pair)
+
+    def _install_via_script(self):
+        """跑程序目录下的 `download_ffmpeg.py`；成功且两个文件都在 → 返回那一对。"""
+        base = app_dir()
+        installer = os.path.join(base, "download_ffmpeg.py")
+        if not os.path.isfile(installer):
+            return None
+        try:
+            rc = subprocess.run([sys.executable, installer], cwd=base,
+                                capture_output=True, text=True, timeout=1800,
+                                **hidden_kwargs())
+        except Exception as e:
+            log_summary(f"运行 download_ffmpeg.py 异常：{e}", "warn")
+            return None
+        if rc.returncode != 0:
+            tail = ((rc.stderr or "") + (rc.stdout or "")).strip()[-200:]
+            log_summary(f"download_ffmpeg.py 退出码 {rc.returncode}：{tail}", "warn")
+            return None
+        ff = os.path.join(base, "ffmpeg.exe")
+        fp = os.path.join(base, "ffprobe.exe")
+        if os.path.isfile(ff) and os.path.isfile(fp):
+            return ff, fp
+        log_summary("download_ffmpeg.py 跑完但程序目录里仍缺 ffmpeg/ffprobe", "warn")
+        return None
+
+    def _install_via_imageio(self):
+        """退回 imageio-ffmpeg：装包 → 取 ffmpeg → 同目录还要有 ffprobe（它不带）。"""
+        def _exe():
             import imageio_ffmpeg
             return imageio_ffmpeg.get_ffmpeg_exe()
 
         try:
-            iexe = _exe_from_imageio()
-        except ImportError:
+            iexe = _exe()
+        except Exception:
             iexe = None
-        except Exception as e:
-            log_summary(f"自动获取 ffmpeg 失败: {e}", "warn")
-            return
-
         if not iexe:
             try:
                 subprocess.check_call(
                     [sys.executable, "-m", "pip", "install", "imageio-ffmpeg",
-                     "-q", "--timeout=30"],
+                     "-q", "--timeout=180"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    **hidden_kwargs(),
-                )
+                    **hidden_kwargs())
             except Exception as e:
-                log_summary(f"自动安装 imageio-ffmpeg 失败: {e}", "warn")
-                return
+                log_summary(f"自动安装 imageio-ffmpeg 失败：{e}", "warn")
+                return None
             try:
-                iexe = _exe_from_imageio()      # 装完之后重新 import
+                # 装完必须**重新 import**：旧实现就是这里踩过 UnboundLocalError
+                # （局部名未绑定 → 被最外层 except 吞掉 → 本会话永不生效）。
+                iexe = _exe()
             except Exception as e:
-                log_summary(f"自动安装后仍无法获取 ffmpeg: {e}", "warn")
-                return
-
+                log_summary(f"自动安装后仍拿不到 ffmpeg：{e}", "warn")
+                return None
         if not iexe or not os.path.isfile(iexe):
-            log_summary("自动安装未产出可用的 ffmpeg，请手动设置", "warn")
-            return
-        d = os.path.dirname(iexe)
-        probe = os.path.join(d, "ffprobe.exe")
+            log_summary("自动安装没产出可用的 ffmpeg", "warn")
+            return None
+        probe = os.path.join(os.path.dirname(iexe), "ffprobe.exe")
         if not os.path.isfile(probe):
-            log_summary("自动安装的 ffmpeg 目录里没有 ffprobe，已放弃", "warn")
-            return
+            log_summary("自动安装只拿到 ffmpeg（imageio 不带 ffprobe）—— 请改用「手动选择」",
+                        "warn")
+            return None
+        return iexe, probe
 
-        def apply():
-            self.ffmpeg = iexe
-            self.ffprobe = probe
-            self.converter = Converter(iexe, probe)
-            # 不写 user.ltx：这是自动路径而非用户选择，且 imageio 只带 ffmpeg、
-            # 目录里没有 ffprobe（所以本分支实际到不了这里）。真需要固定下来
-            # 请用"设置 ffmpeg"手动指定。
-            self._update_footer()
-            log_summary(f"已自动配置 ffmpeg: {iexe}", "ok")
-        self._ui(apply)
+    def _apply_installed(self, pair):
+        """主线程：把自动安装拿到的 ffmpeg/ffprobe 接上（失败明确告知，不静默）。"""
+        if not pair:
+            try:
+                self.task.set_status("自动安装失败", "err")
+            except Exception:
+                pass
+            messagebox.showwarning(
+                "自动安装未完成",
+                "没能自动装好 ffmpeg/ffprobe。\n\n"
+                "请点底部「设置 ffmpeg」手动选择你已有的 ffmpeg.exe"
+                "（同目录需有 ffprobe.exe）。")
+            return
+        ff, fp = pair
+        self.ffmpeg, self.ffprobe = ff, fp
+        self.converter = Converter(ff, fp)
+        self._ffmpeg_probed = True
+        self._update_footer()
+        log_summary(f"自动安装完成：{ff}", "ok")
+        try:
+            self.task.set_status("ffmpeg 已就绪", "ok")
+        except Exception:
+            pass
 

@@ -326,21 +326,33 @@ print("=== 实验性插件 engine_utf8_patch：贡献点是否真的落地 ===")
 #   这里连"确实从 fs 搬走了"一起钉住，免得将来又飘回文件系统 Tab。
 ENGINE_HOST = "font"
 ENGINE_HOST_OTHER = ("fs", "convert", "text", "xml", "video")
-ENGINE_TOOLBAR = ("补丁·识别", "补丁·校验", "补丁·生成")
+# 动作**标签**（命令注册表里的三条）。2026-09-13 面板改造后它们**不再挂到任何
+# 组件的动作区** —— 迁移前同一组操作在"动作区 + 面板"出现两遍（用户原话"有重复的"）。
+ENGINE_ACTIONS = ("补丁·识别", "补丁·校验", "补丁·生成")
+# 面板里的三个按钮（用户口径：只有一个框 + 几个按钮；没有『校验』按钮）。
+ENGINE_PANEL_BUTTONS = ("识别", "生成", "清空")
 ENGINE_PANEL_TITLE = "引擎 UTF-8 补丁（实验性·内部测试）"
-# 这 10 条断言的**唯一名字来源**：实跑时逐条登记，空仓库时按同一批名字整批 SKIP。
+try:                                  # 拖拽是否真的可用（tkinterdnd2 是可选依赖）
+    # 用 find_spec 而不是 import：pyflakes 不认 `# noqa`，为探测而 import 会算"未用导入"。
+    import importlib.util as _ilu
+    _ENGINE_DND = _ilu.find_spec("tkinterdnd2") is not None
+except Exception:
+    _ENGINE_DND = False
+# 这 13 条断言的**唯一名字来源**：实跑时逐条登记，空仓库时按同一批名字整批 SKIP。
 ENGINE_CHECK_NAMES = (
     "实验插件被真实加载（无 load_errors）",
     "实验插件注册了 identify/verify/apply 三个命令",
-    "实验插件的三个动作挂在 汉化包生成 的 toolbar 槽",
-    "实验插件在 汉化包生成 里真的渲染出三个按钮",
-    "实验插件只贡献到 汉化包生成（不污染其余五个组件）",
+    "实验插件不再往任何组件的动作区挂重复入口（六处 toolbar 都没有它）",
+    "实验插件在 汉化包生成 的动作区里也不再渲染（面板内即全部入口）",
     "实验插件的面板进了 汉化包生成 的底部区域（AREA_BOTTOM，且真的在最下方）",
     "实验插件没有新增 Hub 栏目（内置六栏目的计数锁不被扰动）",
-    "实验插件的面板：3 个按钮都绑了回调 + 一个只读结果框",
+    "实验插件的面板：目标拖入框 + 识别/生成/清空三个按钮都绑了回调 + 恰一个只读结果框（无『校验』按钮）",
     "实验插件的识别/生成/校验真的可调用（含缺陷形态负例）",
     "实验插件已从文件系统组件搬走（fs 里既无面板也无动作）",
-    "实验插件面板的三个按钮点了真的进对应流程（不只是 command 非空）",
+    "实验插件面板的按钮点了真的进对应流程（不只是 command 非空）",
+    "无目标时『生成』真的点不动；设了目标后可点；清空后重新置灰",
+    "拖入 exe 等价于识别（与『识别』按钮走同一条识别路径）",
+    "AST 锁：判定路径里不得出现“差异字节数”这类代理指标（比较/条件/常量名）",
 )
 _engine_seen = []
 
@@ -400,13 +412,13 @@ def _engine_panel_bottom_problem():
 
 
 def _engine_panel_problem():
-    """面板里必须真的有 3 个**绑了回调**的按钮 + 1 个只读结果框。
+    """面板里必须真的有：目标拖入框 + 识别/生成/清空三个**绑了回调**的按钮 + 恰一个只读结果框。
 
-    "注册成功"≠"界面上能用"：builder 什么也没建、按钮 command 为空、
-    结果框没建出来或可写，都属于"注册了但用户点不动"，必须在这里抓住。
-    返回 "" 表示没问题，否则返回具体原因（注意本函数返回布尔以外的值，
-    所以**不能**把函数对象直接交给 check —— 那正是本探针里
-    `check(..., lambda: ...)` 那种写法永远为真的空转陷阱）。
+    与迁移前的判据差异（**有意改写**，理由同样是用户口径）：
+      * 少了『校验』按钮 —— "识别就已经自动'校验'了呀，所以这个按钮直接去掉就行了"；
+      * 多了目标拖入框 —— "一个框（只不过这是装 exe 信息的，支持拖拽），几个按钮"。
+    仍然钉住"注册成功 ≠ 界面上能用"：缺控件、按钮 command 为空、结果框可写，
+    都在这里抓住。返回 "" 表示没问题（返回值不是布尔，调用处必须显式求值）。
     """
     lf = next((w for w in _iter_widgets(ev_tab[ENGINE_HOST])
                if isinstance(w, ttk.LabelFrame)
@@ -415,15 +427,35 @@ def _engine_panel_problem():
         return "汉化包生成 Tab 里找不到面板 LabelFrame"
     btns = {str(b.cget("text")): b for b in _iter_widgets(lf)
             if isinstance(b, ttk.Button)}
-    missing = [n for n in ("识别", "校验", "生成") if n not in btns]
+    missing = [n for n in ENGINE_PANEL_BUTTONS if n not in btns]
     if missing:
         return "面板里缺按钮 %s（实有 %s）" % (missing, sorted(btns))
-    inert = [n for n in ("识别", "校验", "生成") if not str(btns[n].cget("command"))]
+    if "校验" in btns:
+        return "面板里仍然有『校验』按钮（用户要求去掉：识别本身就自带校验）"
+    inert = [n for n in ENGINE_PANEL_BUTTONS if not str(btns[n].cget("command"))]
     if inert:
         return "面板按钮没绑回调（点了不会有反应）: %s" % inert
+    # 目标拖入框：句柄要活着、要真的在面板里、要真的是拖拽目标
+    mod = next((p["module"] for p in pm.plugins if p["file"] == ENGINE_PLUGIN), None)
+    if mod is None:
+        return "没拿到插件模块实例"
+    box = None
+    for p in getattr(mod, "_PANELS", []):
+        try:
+            if p.get("box") is not None and p["box"].alive():
+                box = p["box"]
+        except Exception:
+            pass
+    if box is None:
+        return "面板没有活着的目标拖入框句柄（_PANELS[i]['box']）"
+    holder = box.widget
+    if not any(w is holder for w in _iter_widgets(lf)):
+        return "目标拖入框不在面板 LabelFrame 内"
+    if _ENGINE_DND and not hasattr(holder, "drop_target_register"):
+        return "目标框不是拖拽目标（tkinterdnd2 可用却没有 drop_target_register）"
     texts = [w for w in _iter_widgets(lf) if isinstance(w, tk.Text)]
-    if not texts:
-        return "面板里没有结果文本框"
+    if len(texts) != 1:
+        return "面板里的结果文本框不是恰好 1 个（实有 %d 个）" % len(texts)
     if str(texts[0].cget("state")) != "disabled":
         return "结果框不是只读（state=%s）" % texts[0].cget("state")
     return ""
@@ -455,7 +487,7 @@ def _engine_patch_logic_ok():
     return True, ""
 
 
-# ── 11 条断言：调用顺序必须与 ENGINE_CHECK_NAMES 完全一致（末尾有 assert 兜底）──
+# ── 12 条断言：调用顺序必须与 ENGINE_CHECK_NAMES 完全一致（末尾有 assert 兜底）──
 _pm_files = [p["file"] for p in pm.plugins]
 _engine_check(ENGINE_CHECK_NAMES[0],
               ENGINE_PLUGIN in _pm_files
@@ -465,33 +497,32 @@ _engine_check(ENGINE_CHECK_NAMES[1],
               all(("%s:%s" % (ENGINE_PLUGIN, a)) in pm.commands
                   for a in ("identify", "verify", "apply")),
               "commands=%s" % sorted(pm.commands))
-_font_toolbar_labels = [it.get("label")
-                        for it in pm.menu_items_for(ENGINE_HOST, "toolbar", None)]
+# ③④ 去重（2026-09-13 面板改造，用户原话"有重复的"）：命令还在注册表里，但
+#      **没有任何 toolbar 挂载点** → 六个组件的动作区都不该出现这几条标签。
+#      注册表与真实渲染各查一遍：只查注册表证明不了"界面上真的没有"。
+_ALL_ENGINE_HOSTS = (ENGINE_HOST,) + ENGINE_HOST_OTHER
+_dup_mounted = {h: [it.get("label") for it in pm.menu_items_for(h, "toolbar", None)
+                    if it.get("plugin") == ENGINE_PLUGIN] for h in _ALL_ENGINE_HOSTS}
 _engine_check(ENGINE_CHECK_NAMES[2],
-              all(lb in _font_toolbar_labels for lb in ENGINE_TOOLBAR),
-              "font toolbar=%s" % _font_toolbar_labels)
+              not any(_dup_mounted.values()), "各组件动作区挂载残留: %s" % _dup_mounted)
+_dup_rendered = {h: [lb for lb in ev[h]["buttons"] if lb in ENGINE_ACTIONS]
+                 for h in _ALL_ENGINE_HOSTS}
 _engine_check(ENGINE_CHECK_NAMES[3],
-              all(lb in ev[ENGINE_HOST]["buttons"] for lb in ENGINE_TOOLBAR),
-              "font buttons=%s" % ev[ENGINE_HOST]["buttons"])
-_engine_check(ENGINE_CHECK_NAMES[4],
-              not any(lb in ev[h]["buttons"] for h in ENGINE_HOST_OTHER
-                      for lb in ENGINE_TOOLBAR),
-              "其余组件的按钮: %s"
-              % {h: ev[h]["buttons"] for h in ENGINE_HOST_OTHER})
+              not any(_dup_rendered.values()), "各组件动作区渲染残留: %s" % _dup_rendered)
 _engine_panel_bottom_why = _engine_panel_bottom_problem()
-_engine_check(ENGINE_CHECK_NAMES[5],
+_engine_check(ENGINE_CHECK_NAMES[4],
               not _engine_panel_bottom_why, _engine_panel_bottom_why)
-_engine_check(ENGINE_CHECK_NAMES[6],
+_engine_check(ENGINE_CHECK_NAMES[5],
               not [t for t in pm.tools if t.get("plugin") == ENGINE_PLUGIN],
               "实验插件贡献的栏目: %s" % [t.get("name") for t in pm.tools
                                           if t.get("plugin") == ENGINE_PLUGIN])
 _engine_panel_why = _engine_panel_problem()
-_engine_check(ENGINE_CHECK_NAMES[7],
+_engine_check(ENGINE_CHECK_NAMES[6],
               not _engine_panel_why, _engine_panel_why)
 _engine_logic_ok, _engine_logic_why = _engine_patch_logic_ok()
-_engine_check(ENGINE_CHECK_NAMES[8], _engine_logic_ok, _engine_logic_why)
+_engine_check(ENGINE_CHECK_NAMES[7], _engine_logic_ok, _engine_logic_why)
 
-# ⑩ "确实从 fs 搬走了"：fs 上既不能有本插件的**面板**（注册表 + 渲染），
+# ⑨ "确实从 fs 搬走了"：fs 上既不能有本插件的**面板**（注册表 + 渲染），
 #    也不能有本插件的 **toolbar 挂载点**。这条是防"将来又飘回文件系统组件"的锁 ——
 #    用户明确要求把它挪出 fs，光靠"font 上有"是证明不了"fs 上没有"的。
 _fs_panels = [p for p in pm.panels_for("fs", None, None)
@@ -500,44 +531,202 @@ _fs_mounts = [it for it in pm.menu_items_for("fs", "toolbar", None)
               if it.get("plugin") == ENGINE_PLUGIN]
 _fs_render = [str(l).strip() for l in ev["fs"]["labs"]
               if ENGINE_PANEL_TITLE in str(l)]
-_engine_check(ENGINE_CHECK_NAMES[9],
+_engine_check(ENGINE_CHECK_NAMES[8],
               not _fs_panels and not _fs_mounts and not _fs_render,
               "fs 残留: 面板注册 %s / toolbar 挂载 %s / 已渲染 %s"
               % ([p.get("title") for p in _fs_panels],
                  [it.get("label") for it in _fs_mounts], _fs_render))
 
-# ⑪ "回调非空" ≠ "点了做对的事"：真 `invoke()` 一次，看进的是不是对应的那个 op。
-#    为什么迁移后必须补这条：面板改用 `api.ui` 之后三个按钮都由同一个 builder 造，
-#    接线接错（比如三个都接 identify）时"command 非空 + 控件齐全"照样全绿。
-def _engine_panel_click_ok():
+# ⑩⑪⑫ "回调非空" ≠ "点了做对的事"：真 `invoke()` 一次，看进的是不是对应的那个 op。
+#    这一组必须真的点：面板改用 `api.ui` 之后按钮由 builder 造，接线接错
+#    （比如"生成"也接 identify）时"command 非空 + 控件齐全"照样全绿。
+#    ★ 面板新契约里"生成"在**无目标时是灰的**，所以这里要先给目标再点。
+def _engine_panel_handles():
+    """(面板 LabelFrame, 插件模块, 按钮 dict) —— 三个点击类断言共用。"""
     mod = next((p["module"] for p in pm.plugins if p["file"] == ENGINE_PLUGIN), None)
     if mod is None:
-        return False, "没拿到插件模块实例"
+        return None, None, {}
     lf = next((w for w in _iter_widgets(ev_tab[ENGINE_HOST])
                if isinstance(w, ttk.LabelFrame)
                and ENGINE_PANEL_TITLE in str(w.cget("text"))), None)
+    btns = {} if lf is None else {str(b.cget("text")): b for b in _iter_widgets(lf)
+                                  if isinstance(b, ttk.Button)}
+    return lf, mod, btns
+
+
+def _engine_panel_click_ok():
+    lf, mod, btns = _engine_panel_handles()
+    if mod is None:
+        return False, "没拿到插件模块实例"
     if lf is None:
         return False, "找不到面板 LabelFrame"
-    btns = {str(b.cget("text")): b for b in _iter_widgets(lf)
-            if isinstance(b, ttk.Button)}
     orig = getattr(mod, "_gui_run", None)
     if orig is None:
         return False, "插件里没有 _gui_run（面板接线的前提已变）"
+    orig_path = mod._STATE.get("path")
     calls = []
     mod._gui_run = lambda op, parent=None: calls.append(op)
     try:
-        for text in ("识别", "校验", "生成"):
+        mod._STATE["path"] = "<probe-target>"
+        mod._sync_actions()
+        for text in ("识别", "生成"):
             if text in btns:
                 btns[text].invoke()
     finally:
         mod._gui_run = orig
-    if calls != ["identify", "verify", "apply"]:
-        return False, "点击进入的流程是 %r（应为 identify/verify/apply）" % (calls,)
+        mod._STATE["path"] = orig_path or ""
+        mod._sync_actions()
+    if calls != ["identify", "apply"]:
+        return False, "点击进入的流程是 %r（应为 identify/apply）" % (calls,)
+    return True, ""
+
+
+def _engine_panel_state_ok():
+    """无目标 → 『生成』真的点不动；设了目标 → 可点；清空 → 重新置灰。"""
+    lf, mod, btns = _engine_panel_handles()
+    if mod is None or "生成" not in btns:
+        return False, "没拿到插件模块实例，或面板里没有『生成』按钮"
+    orig = getattr(mod, "_gui_run", None)
+    orig_path = mod._STATE.get("path")
+    calls = []
+    mod._gui_run = lambda op, parent=None: calls.append(op)
+    try:
+        mod._STATE["path"] = ""
+        mod._sync_actions()
+        grey_when_empty = str(btns["生成"].cget("state")) == "disabled"
+        btns["生成"].invoke()                  # 灰着点 → 必须什么都不发生
+        after_disabled = list(calls)
+        mod._STATE["path"] = "<probe-target>"
+        mod._sync_actions()
+        live_when_target = str(btns["生成"].cget("state")) != "disabled"
+        btns["生成"].invoke()                  # 有目标点 → 进 apply
+        after_enabled = list(calls)
+        mod._clear_panel()                     # 清空 → 重新置灰
+        grey_after_clear = str(btns["生成"].cget("state")) == "disabled"
+    finally:
+        mod._gui_run = orig
+        mod._STATE["path"] = orig_path or ""
+        mod._sync_actions()
+    if not grey_when_empty:
+        return False, "无目标时『生成』没有置灰（state=%r）" % btns["生成"].cget("state")
+    if after_disabled:
+        return False, "无目标时点『生成』居然进了流程: %r" % (after_disabled,)
+    if not live_when_target:
+        return False, "设了目标后『生成』仍然是灰的"
+    if after_enabled != ["apply"]:
+        return False, "有目标时点『生成』进了 %r（应为 ['apply']）" % (after_enabled,)
+    if not grey_after_clear:
+        return False, "清空之后『生成』没有重新置灰"
+    return True, ""
+
+
+def _engine_drop_equivalence_ok():
+    """拖入 exe 必须走**识别流程**（不弹"选文件"窗口）：目标被记下 + 真的产出识别报告。
+
+    这里只把 `_emit` 换成记录器（报告出来的那一层），不替换识别路径本身 ——
+    否则测的就成了"我把实现换掉了"。
+    """
+    lf, mod, btns = _engine_panel_handles()
+    if mod is None:
+        return False, "没拿到插件模块实例"
+    orig = getattr(mod, "_emit", None)
+    orig_path = mod._STATE.get("path")
+    reps = []
+    mod._emit = lambda rep: reps.append(rep)
+    try:
+        mod._on_drop(r"X:\probe\dropped.exe")
+        dropped = mod._STATE.get("path")
+    finally:
+        mod._emit = orig
+        mod._STATE["path"] = orig_path or ""
+        mod._sync_actions()
+    if dropped != r"X:\probe\dropped.exe":
+        return False, "拖入之后目标没有被记下: %r" % (dropped,)
+    if not reps or reps[0].get("title") != "识别":
+        return False, "拖入没有产出识别报告: %r" % ([r.get("title") for r in reps],)
+    if reps[0].get("path") != r"X:\probe\dropped.exe":
+        return False, "识别报告针对的不是拖入的那个文件: %r" % (reps[0].get("path"),)
+    return True, ""
+
+
+def _engine_proxy_metric_ok():
+    """AST 锁：判定路径里不得出现"差异字节数"这类**代理指标**（红线从行为升级到结构）。
+
+    规则**刻意写窄**（宽规则会误杀：`n_call_orig == len(call_ids) - 3` 是**项数**比较，
+    不是字节数比较）—— 只盯"字节数"这一类名字：
+      * `changed_bytes` / `diff_bytes` 这类名字**不得出现在任何比较或条件里**
+        （`ast.Compare` / `if` / `while` 的 test）；它们只允许出现在给人看的报告文本
+        （字符串格式化）里；
+      * `EXPECTED_DIFF_BYTES` 这类常量名不得出现在**可执行代码**里（注释留痕可以 ——
+        注释不进 AST，所以这里天然只看代码）。
+
+    为什么值这条锁：实测 v3 与 v4 的差异字节数完全相同（都是 88）—— 拿字节数当判据
+    既分不出正确/缺陷形态，也证明不了"打对了位置"。人写的注释会忘、会漂，
+    结构锁不会。
+    """
+    import ast
+    src_p = os.path.join(BASE, "plugins", ENGINE_PLUGIN)
+    if not os.path.isfile(src_p):
+        return True, ""                      # 缺件由 SKIP 机制管，这里不越权
+    try:
+        with open(src_p, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+    except SyntaxError as e:
+        return False, "插件源码解析失败: %s" % e
+    proxy = ("changed_bytes", "diff_bytes", "diff_count", "byte_diff")
+    bad = []
+
+    def names_in(node):
+        """比较/条件里出现的"名字"集合。
+
+        ★ 必须连**字符串下标键**一起收：本文件里它是 `fp["changed_bytes"]` 这种形态，
+          键是 `ast.Constant(str)` 而不是 Name —— 第一版只收 Name/Attribute，于是
+          "把差异字节数塞进判定"的注入没能把锁弄红（注入验证当场抓到这个洞）。
+        """
+        out = set()
+        for n in ast.walk(node):
+            if isinstance(n, ast.Name):
+                out.add(n.id)
+            elif isinstance(n, ast.Attribute):
+                out.add(n.attr)
+            elif isinstance(n, ast.Subscript):
+                sl = n.slice
+                if isinstance(sl, ast.Constant) and isinstance(sl.value, str):
+                    out.add(sl.value)
+        return out
+
+    for node in ast.walk(tree):
+        sub, kind = None, ""
+        if isinstance(node, ast.Compare):
+            sub, kind = node, "比较"
+        elif isinstance(node, ast.If):
+            sub, kind = node.test, "if 条件"
+        elif isinstance(node, ast.While):
+            sub, kind = node.test, "while 条件"
+        if sub is None:
+            continue
+        hit = sorted(names_in(sub) & set(proxy))
+        if hit:
+            bad.append("%s（第 %d 行）里用了 %s"
+                       % (kind, getattr(sub, "lineno", 0), hit))
+    for node in ast.walk(tree):
+        nm = node.id if isinstance(node, ast.Name) else (
+            node.attr if isinstance(node, ast.Attribute) else None)
+        if nm and nm.startswith("EXPECTED_DIFF"):
+            bad.append("可执行代码里出现常量名 %s（第 %d 行）" % (nm, node.lineno))
+    if bad:
+        return False, "；".join(bad[:3])
     return True, ""
 
 
 _engine_click_ok, _engine_click_why = _engine_panel_click_ok()
-_engine_check(ENGINE_CHECK_NAMES[10], _engine_click_ok, _engine_click_why)
+_engine_check(ENGINE_CHECK_NAMES[9], _engine_click_ok, _engine_click_why)
+_engine_state_ok, _engine_state_why = _engine_panel_state_ok()
+_engine_check(ENGINE_CHECK_NAMES[10], _engine_state_ok, _engine_state_why)
+_engine_drop_ok, _engine_drop_why = _engine_drop_equivalence_ok()
+_engine_check(ENGINE_CHECK_NAMES[11], _engine_drop_ok, _engine_drop_why)
+_engine_ast_ok, _engine_ast_why = _engine_proxy_metric_ok()
+_engine_check(ENGINE_CHECK_NAMES[12], _engine_ast_ok, _engine_ast_why)
 
 # 名单不许漂移：空仓库时按 ENGINE_CHECK_NAMES 整批 SKIP，两处必须完全一致，
 # 否则会出现"实跑 11 条、SKIP 只报 10 条"这种静默漏报。

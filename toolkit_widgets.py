@@ -1340,7 +1340,7 @@ class LogBox(tk.Text):
                   ("warn", "yellow"), ("dim", "text_dim"), ("hdr", "orange")]
 
     def __init__(self, parent, height=4, wrap="word", timestamp=False,
-                 scrollbar=True, tags=None):
+                 scrollbar=True, tags=None, hbar=False):
         super().__init__(parent, bg=T["surface"], fg=T["text"],
                          insertbackground=T["text"], font=T["font_mono"],
                          relief="flat", borderwidth=0, wrap=wrap,
@@ -1353,10 +1353,24 @@ class LogBox(tk.Text):
         self._timestamp = timestamp
         self._tag_roles = self._BASE_TAGS + (tags or [])
         self.recolor()
+        # ★ `hbar=True`：再加一条**横向**滚动条（opt-in，默认不建）。
+        #   为什么需要：`wrap="none"` 的日志（构建输出就是）**不折行**，长行的尾巴
+        #   没有任何可拖的东西 —— 实测 `xview()=(0.0, 0.06)`，也就是 94% 的内容
+        #   看得见却拖不到（用户口径 2026-09-14："还有，滚动条呢？"）。
+        #   布局仍用 pack、仍在这个父容器里（**不新建内嵌 frame**）：调用方（构建器）
+        #   拿到 LogBox 后还会再 pack 一次，换容器会让那次 pack 把文本搬出内嵌格。
+        #   顺序 = 竖条(右,满高) → 横条(底) → 文本(左,占剩余)：文本最后 pack，
+        #   调用方再 pack 一次也只是改它自己的参数，不会动两条条子的位置。
+        self._hbar = None
         if scrollbar:
             sb = AutoScrollbar(parent, orient="vertical", command=self.yview)
             self.configure(yscrollcommand=sb.set)
             sb.pack(side="right", fill="y")
+            if hbar:
+                hsb = AutoScrollbar(parent, orient="horizontal", command=self.xview)
+                self.configure(xscrollcommand=hsb.set)
+                hsb.pack(side="bottom", fill="x")
+                self._hbar = hsb
             self.pack(side="left", fill="both", expand=True)
 
     def recolor(self):

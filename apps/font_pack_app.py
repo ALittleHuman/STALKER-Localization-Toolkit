@@ -13,8 +13,14 @@ from toolkit import (color, tool_header, dir_row, SplitPane, _make_pump,
                      themed_entry, themed_listbox, dialog_window,
                      HOST_FONT, AREA_BOTTOM,
                      AREA_GAME, AREA_LANG, AREA_SIZE, AREA_SUFFIX,
-                     system_font_dirs, open_in_explorer, px)
-from font_pack import GAMES, ensure_pillow, build_package
+                     system_font_dirs, open_in_explorer, px,
+                     load_user_value, save_user_values)
+from font_pack import GAMES, ensure_pillow, build_package, ST_FALLBACK
+
+# 上次用过的字体记在**共用的** user.ltx 里（[font] 段）—— 与视频页的 [ffmpeg] 段同一套
+# 机制（`toolkit_platform` 的读写会保留其它段）。用户口径 2026-09-14：
+# "user 里面还要保存上一次使用的字体，点一次『选择』保存一次。"
+_CFG_SECTION = "font"
 
 class FontPackApp:
     """汉化包生成。
@@ -120,20 +126,27 @@ class FontPackApp:
         dir_row(top, "字体文件:", self.font_var, browse=self._browse_font, drop=self._on_drop_font)
         dir_row(top, "输出目录:", self.out_var, browse=self._browse_out, drop=self._on_drop_out)
 
-        # 默认字体: 系统微软雅黑优先; 仓库根 msyh.ttf 后备
-        # （当前仓库未附带该文件, 因此实际上通常走系统字体, 后备分支形同预留）。
-        # 字体目录由 toolkit_platform.system_font_dirs() 按平台给出，不写死 C:\Windows\Fonts
-        for _fd in system_font_dirs():
-            for _n in ("msyh.ttc", "msyh.ttf", "msyhl.ttc"):
-                cand = os.path.join(_fd, _n)
-                if os.path.exists(cand):
-                    self.font_var.set(cand); break
-            if self.font_var.get():
-                break
+        # 默认字体（优先级从高到低；用户口径 2026-09-14："user 里面还要保存上一次使用的
+        # 字体，点一次『选择』保存一次"）：
+        #   1. **上次用过的**（user.ltx 的 [font] 段，且文件仍存在）；
+        #   2. 系统微软雅黑（msyh.ttc / msyh.ttf / msyhl.ttc）；
+        #   3. 仓库根 msyh.ttf（当前仓库未附带该文件，属预留分支）。
+        # 字体目录由 toolkit_platform.system_font_dirs() 按平台给出，不写死 C:\Windows\Fonts。
+        saved = load_user_value(_CFG_SECTION, "path")
+        if saved and os.path.isfile(saved):
+            self.font_var.set(saved)
         else:
-            local = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "msyh.ttf")
-            if os.path.exists(local):
-                self.font_var.set(local)
+            for _fd in system_font_dirs():
+                for _n in ("msyh.ttc", "msyh.ttf", "msyhl.ttc"):
+                    cand = os.path.join(_fd, _n)
+                    if os.path.exists(cand):
+                        self.font_var.set(cand); break
+                if self.font_var.get():
+                    break
+            if not self.font_var.get():
+                local = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "msyh.ttf")
+                if os.path.exists(local):
+                    self.font_var.set(local)
 
         # 按钮行
         row3 = ttk.Frame(top); row3.pack(fill="x", pady=(6, 0))
@@ -329,30 +342,98 @@ class FontPackApp:
                          lambda e: pv_canvas.configure(scrollregion=pv_canvas.bbox("all")))
         pv_name = ttk.Label(pv, text="", style="Dim.TLabel", wraplength=380)
         pv_name.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        pv_name.bind("<Configure>",
-                     lambda e: pv_name.configure(wraplength=max(80, pv_name.winfo_width())))
+
+        def _wrap_name(_=None):
+            """描述文字按**窗格可用宽度**换行。
+
+            原来绑在它自己的 `<Configure>` 上取 `winfo_width()`：布局早期那是 1，
+            被 `max(80, …)` 兜住 → 一个字符一行（用户实测"换行如此拉跨"）。
+            改成由容器宽度驱动，并给一个真正可读的下限。
+            """
+            try:
+                avail = pv.winfo_width() - 16
+            except Exception:
+                avail = 380
+            try:
+                pv_name.configure(wraplength=max(160, avail))
+            except Exception:
+                pass
+        pv.bind("<Configure>", _wrap_name)
+        win.after_idle(_wrap_name)
         win.bind("<Configure>",
                  lambda e: pv_canvas.configure(width=max(120, pv_canvas.winfo_width())))
 
-        # 唯一的字形判定: 返回 "ok" / "missing" / "unknown"。
+        # 唯一的字形判定: 返回 "ok" / "japanese" / "missing" / "unknown"。
         # 列表标记与预览标题**共用**这一判据, 避免同一字体两处结论互相矛盾。
-        CJK_MARK = {"ok": "✓ 中文", "missing": "⚠ 疑似缺字形", "unknown": "? 检测失败"}
+        CJK_MARK = {"ok": "✓ 中文",
+                    "japanese": "⚠ 日语字体（缺简体→用繁体）",
+                    "missing": "⚠ 疑似缺字形",
+                    "unknown": "? 检测失败"}
+
+        # 判据样本（2026-09-14 修正）：必须混入**简体特有**的字。
+        # 为什么必须改：老样本是 "永你好汉化测"，而它把 `getbbox() is None`（取不到字形）
+        # 的字**直接跳过** —— 日文字体 hpsimplifiedjpan 有 永/你/好/化、没有 汉/测，
+        # 于是"不同 bbox 数 = 4 > 1"照样判 ✓ 中文，可预览里那几个字是**整字宽的空洞**
+        # （用户实测的矛盾："列表标 ✓ 中文，预览却缺常用字"）。
+        # 现在：简体字只要缺一个就判 missing（fail-closed），"全部 bbox 相同"（notdef
+        # 方块）也判 missing。
+        CJK_SAMPLE = "永你好汉化测试这说们书见风"
+
+        def sample_missing(path):
+            """样本里**取不到字形**的字（供预览标题解释"到底缺哪些字"）。"""
+            out = []
+            try:
+                from PIL import ImageFont as _PIF
+                font = _PIF.truetype(path, 40)
+                for ch in CJK_SAMPLE:
+                    if font.getmask(ch).getbbox() is None:
+                        out.append(ch)
+            except Exception:
+                pass
+            return out
+
+        def sample_fallback(path):
+            """缺字形的样本字里**能用繁体字形顶上**的那些：{简体: 繁体}。
+
+            用户口径 2026-09-14："日语的，标明是日语字体，然后那些缺简体的就上繁体。"
+            判据 = 该字在 `st_fallback.json` 里有繁体替代**且字体真画得出那个繁体字形**
+            （只按表替换会把"表里有、字体也没有"的字也标成可补）。
+            """
+            out = {}
+            try:
+                from PIL import ImageFont as _PIF
+                font = _PIF.truetype(path, 40)
+                for ch in sample_missing(path):
+                    alt = ST_FALLBACK.get(ch)
+                    if alt and font.getmask(alt).getbbox() is not None:
+                        out[ch] = alt
+            except Exception:
+                pass
+            return out
 
         def glyph_status(path):
-            """中文字形判定的唯一判据: 逐字符取字形包围盒, 多个不同 bbox = 真实字形
-            (notdef 缺字形对全部字符渲染同一方块, bbox 全相同). 0.1ms/字体级.
+            """中文字形判定的唯一判据：逐字符取字形包围盒。
 
-            返回值区分三态: "unknown" 是**检测失败**（PIL 缺失 / 字体无法解析）,
-            与"字体缺中文字形"不是一回事, 界面上必须分开显示。
+            四态（列表标记与预览标题**共用**这一判据，避免两处结论互相矛盾）：
+              * "ok"       —— 样本里每个字都取到字形，且不同 bbox 数 > 1；
+              * "japanese" —— 有简体字取不到字形，但**缺的那些都能用繁体字形顶上**
+                              （日文字体 hpsimplifiedjpan 的典型形态：按 JIS 收字，没有
+                              简体专有形却有繁体形）。这不是"坏字体"，不能与 missing
+                              混为一谈 —— 用户要的就是"标明是日语字体"。
+              * "missing" —— 有简体字连繁体替代也补不出来（fail-closed），或 bbox 全同
+                             （该字体对什么字都画同一个 notdef 方块）；
+              * "unknown" —— **检测失败**（PIL 缺失 / 字体无法解析），与"字体缺字形"
+                             不是一回事，界面上必须分开显示。
             """
             try:
                 from PIL import ImageFont as _PIF
                 font = _PIF.truetype(path, 40)
                 boxes = set()
-                for ch in "永你好汉化测":
+                for ch in CJK_SAMPLE:
                     b = font.getmask(ch).getbbox()
                     if b is None:
-                        continue
+                        # 缺简体字：缺的那些全能用繁体顶上 → 日语/繁体字体；否则真缺
+                        return "japanese" if sample_fallback(path) else "missing"
                     boxes.add(b)
                 return "ok" if len(boxes) > 1 else "missing"
             except Exception:
@@ -448,10 +529,20 @@ class FontPackApp:
             show_preview()
 
         def show_preview(_=None):
-            """选中字体时用 PIL 渲染预览文字 (支持缩放)。
+            """选中字体时渲染预览（**图随内容增长**，缩放才真的有用）。
 
-            中文字形结论与列表标记**同源**（cached_status → glyph_status）,
-            不再另用"墨迹覆盖率"判据, 以免同一字体在列表与预览里结论矛盾。
+            本轮修的两件事（用户实测 2026-09-14）：
+              ① 原来是固定 `330x130` 的图 + 按 zoom 只放大**字号** → 字一大就被裁掉，
+                 看起来"只有左上角一小块、缩放没什么卵用"。现在按文字实际尺寸出图，
+                 画布滚动条随之可用（放大 = 整张图变大，而不是把字挤进固定框）。
+              ② 缺字形的字在标题里点出来（"缺: 汉测"），不再让人猜预览里那排空洞是什么 ——
+                 那是"这个字体确实没有这些简体字"，不是渲染坏了。
+            追加（同一天，用户口径"日语的，标明是日语字体，然后那些缺简体的就上繁体"）：
+              ③ 判为 `japanese`（缺的简体字都能用繁体顶上）时，标题**标明是日语字体**，
+                 并列出"简体→繁体"的对应；预览行**直接用繁体字形显示**这些字
+                 （否则那几格是空白/方框，用户看到的还是"缺字"）。
+
+            中文字形结论与列表标记**同源**（cached_status → glyph_status）。
             """
             sel = lb.curselection()
             items = getattr(win, "font_items", [])
@@ -459,27 +550,60 @@ class FontPackApp:
                 return
             path = items[sel[0]]
             st = cached_status(path)
-            if st == "missing":
-                warn = "  ⚠ 疑似缺中文字形（字形判据）"
+            subs = sample_fallback(path) if st == "japanese" else {}
+            if st == "japanese":
+                pairs = "、".join("%s→%s" % (a, b) for a, b in subs.items())
+                warn = ("  ⚠ 日语字体（缺 %d 个简体字，预览已用繁体字形显示：%s）"
+                        % (len(subs), pairs))
+            elif st == "missing":
+                miss = "".join(sample_missing(path))
+                warn = "  ⚠ 疑似缺中文字形（字形判据%s）" % (("：缺 " + miss) if miss else "")
             elif st == "unknown":
                 warn = "  ? 检测失败（PIL 不可用或字体无法解析）"
             else:
                 warn = ""
             try:
                 from PIL import Image, ImageDraw, ImageFont as _PIF, ImageTk
-                size = int(40 * zoom["v"])
+                size = max(12, int(40 * zoom["v"]))
                 font = _PIF.truetype(path, size)
-                img = Image.new("RGB", (330, 130), color("bg"))
+                line1, line2 = "汉化测试你好ABC", "Привет 世界 123"
+                if subs:                      # ★ 缺简体的字换成繁体字形再画（用户口径）
+                    line1 = "".join(subs.get(c, c) for c in line1)
+                    line2 = "".join(subs.get(c, c) for c in line2)
+                asc, desc = font.getmetrics()
+                line_h = asc + desc
+                pad = max(8, size // 3)
+                text_w = max(font.getlength(line1), font.getlength(line2))
+                try:
+                    avail = max(0, int(pv_canvas.winfo_width()) - 2 * pad - 8)
+                except Exception:
+                    avail = 0
+                w = int(max(text_w, avail) + 2 * pad)
+                h = int(2 * line_h + 3 * pad)
+                img = Image.new("RGB", (w, h), color("bg"))
                 d = ImageDraw.Draw(img)
-                d.text((12, 10), "汉化测试你好ABC", font=font, fill=color("text"))
-                d.text((12, 62), "Привет 世界 123", font=font, fill=color("text_dim"))
+                d.text((pad, pad), line1, font=font, fill=color("text"))
+                d.text((pad, pad + line_h + pad // 2), line2, font=font,
+                       fill=color("text_dim"))
                 photo = ImageTk.PhotoImage(img)
                 preview_lbl.configure(image=photo)
-                preview_lbl.image = photo
+                preview_lbl.image = photo          # 保住引用，否则图会被 GC 掉
+                pv_canvas.configure(scrollregion=(0, 0, w + 8, h + 8))
                 pv_name.configure(text=f"{os.path.basename(path)}  [{font.getname()[0]}]{warn}")
             except Exception:
                 preview_lbl.configure(image="")
                 pv_name.configure(text=f"{os.path.basename(path)}  (预览失败){warn}")
+
+        def _remember_font(path):
+            """记住这次选的字体（写 user.ltx 的 [font] 段，保留其它段）。
+
+            用户口径："user 里面还要保存上一次使用的字体，点一次『选择』保存一次。"
+            """
+            try:
+                if not save_user_values(_CFG_SECTION, {"path": path}):
+                    log_summary("警告: 无法写入 user.ltx，下次启动需重新选择字体", "warn")
+            except Exception as e:
+                log_summary(f"记住字体失败：{e}", "warn")
 
         def pick(_=None):
             sel = lb.curselection()
@@ -488,6 +612,7 @@ class FontPackApp:
             items = getattr(win, "font_items", [])
             if 0 <= sel[0] < len(items):
                 self.font_var.set(items[sel[0]])
+                _remember_font(items[sel[0]])
                 win.destroy()
 
         def browse_other():
@@ -500,6 +625,9 @@ class FontPackApp:
                 filetypes=[("字体文件", "*.ttf *.ttc *.otf"), ("所有文件", "*.*")])
             if f:
                 self.font_var.set(f)
+                # 从"浏览其他目录"选的也是用户的选择，同样记住（否则这条入口就成了
+                # "选了但下次还得再选一次"，与用户要的"保存上一次使用的字体"不一致）
+                _remember_font(f)
                 win.destroy()
 
         btn_bar = ttk.Frame(win); btn_bar.pack(fill="x", padx=10, pady=8)

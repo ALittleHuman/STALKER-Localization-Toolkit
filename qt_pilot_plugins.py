@@ -125,6 +125,72 @@ if QT_AVAILABLE:
             except Exception:
                 return ""
 
+    class QtDropBox:
+        """只读的"拖入目标"显示框（Qt 实现），与 `toolkit_plugin_ui.TkDropBox` 同接口。"""
+
+        def __init__(self, widget, placeholder=""):
+            self.widget = widget
+            self.text = widget
+            self._placeholder = str(placeholder or "")
+
+        def set_text(self, s):
+            s = str(s or "")
+            self.text.setText(s if s else "")
+            if not s:
+                self.text.setPlaceholderText(self._placeholder)
+
+        def get_text(self):
+            try:
+                return self.text.text()
+            except Exception:
+                return ""
+
+        def clear(self):
+            self.set_text("")
+
+        def alive(self):
+            try:
+                import shiboken6
+                return bool(shiboken6.isValid(self.text))
+            except Exception:
+                return True
+
+    class _DropLineEdit(QtWidgets.QLineEdit):
+        """接收文件拖入的只读单行框：Qt 不给 QLineEdit 暴露 drop 信号，所以子类化。
+
+        这是框架侧实现（插件只写 `api.ui.drop_box`），Tk 侧对应 tkinterdnd2。
+        `dropEvent` 去掉多余空白后回调；非文件拖入（纯文本）不理会。
+        """
+
+        def __init__(self, parent, on_file):
+            super().__init__(parent)
+            self._on_file = on_file
+            self.setAcceptDrops(True)
+
+        def dragEnterEvent(self, e):
+            try:
+                if e.mimeData().hasUrls():
+                    e.acceptProposedAction()
+                    return
+            except Exception:
+                pass
+            super().dragEnterEvent(e)
+
+        def dropEvent(self, e):
+            urls = []
+            try:
+                urls = e.mimeData().urls()
+            except Exception:
+                urls = []
+            if urls and self._on_file is not None:
+                try:
+                    self._on_file(urls[0].toLocalFile())
+                    e.acceptProposedAction()
+                    return
+                except Exception:
+                    pass
+            super().dropEvent(e)
+
     class QtUiFactory:
         """`api.ui` 的 Qt 实现：与 `TkUiFactory` **同名同参**，插件无需分支。"""
 
@@ -286,6 +352,20 @@ if QT_AVAILABLE:
             self._layout_for(parent).addWidget(w)
             return w
 
+        def drop_box(self, parent, on_file=None, placeholder="", width=None):
+            """只读拖入框（Qt 实现）：与 Tk 侧同名同参，真接 DnD（不是"如实上报不支持"）。
+
+            为什么真做而不是降级：面板在 Qt 后端必须与 Tk 后端**行为一致**，
+            否则同一份插件代码在两个后端能力不同，"可移植"就成了半截话。
+            """
+            w = _DropLineEdit(parent, on_file)
+            w.setReadOnly(True)
+            w.setPlaceholderText(str(placeholder or ""))
+            if width is not None:
+                w.setMaximumWidth(int(width) * 8)
+            self._layout_for(parent).addWidget(w)
+            return QtDropBox(w, placeholder)
+
         def combo(self, parent, values=(), variable=None, width=None, on_change=None):
             w = QtWidgets.QComboBox(parent)
             w.addItems([str(v) for v in values])
@@ -298,6 +378,14 @@ if QT_AVAILABLE:
         def set_text(self, widget, text):
             try:
                 widget.setText(str(text))
+                return True
+            except Exception:
+                return False
+
+        def set_state(self, widget, state):
+            """置灰 / 恢复（与 Tk 的 `configure(state=...)` 同义）。"""
+            try:
+                widget.setEnabled(state != "disabled")
                 return True
             except Exception:
                 return False

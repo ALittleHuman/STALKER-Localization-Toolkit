@@ -182,8 +182,8 @@ def main():
         QPP = None
 
     if QPP is not None:
-        check("契约清单是从 toolkit_plugin_ui.py 读到的 14 个方法（没降级成空/旧清单）",
-              lambda: len(QPP.UI_METHODS) == 14)
+        check("契约清单是从 toolkit_plugin_ui.py 读到的 16 个方法（没降级成空/旧清单）",
+              lambda: len(QPP.UI_METHODS) == 16)
         check("Qt 后端工厂与 Tk 后端工厂方法面一致",
               lambda: all(hasattr(QPP.QtUiFactory, m) for m in QPP.UI_METHODS))
         check("契约清单自己不依赖导入 Tk 模块（sys.modules 里没有 toolkit_plugin_ui）",
@@ -220,8 +220,8 @@ def main():
         print("        插件报告：%s" % rep.counts())
         for line in rep.lines():
             print("          " + line)
-        check("engine_utf8_patch 的三个动作在 Qt 宿主里生成了按钮",
-              lambda: len(host.buttons) == 3)
+        check("engine_utf8_patch 不再往动作区挂入口（Qt 宿主里 0 个按钮，面板是唯一入口）",
+              lambda: len(host.buttons) == 0)
 
         # ── 真实插件面板：迁移后必须**真的在 Qt 上建出来**，不再是"注册了但跳过" ──
         # 这是 10.7 的验收点：api.ui 契约把 engine_utf8_patch 从 tk-only 变成可移植。
@@ -242,9 +242,17 @@ def main():
 
         _ebtns = {b.text(): b for b in (_ebox.findChildren(QW.QPushButton) if _ebox else [])}
         _eviews = _ebox.findChildren(QW.QPlainTextEdit) if _ebox else []
-        check("Qt 面板里三个动作按钮齐全", lambda: all(k in _ebtns for k in ("识别", "校验", "生成")))
+        _edrops = _ebox.findChildren(QW.QLineEdit) if _ebox else []
+        check("Qt 面板里按钮齐全：识别 / 生成 / 清空，且**没有**『校验』（识别自带校验）",
+              lambda: all(k in _ebtns for k in ("识别", "生成", "清空"))
+                      and "校验" not in _ebtns)
         check("Qt 面板里有 1 个只读结果视图（对应 Tk 侧 state=disabled 的 Text）",
               lambda: len(_eviews) == 1 and _eviews[0].isReadOnly())
+        check("Qt 面板里有 1 个只读目标框，且真的接收拖入（acceptDrops）",
+              lambda: len(_edrops) == 1 and _edrops[0].isReadOnly()
+                      and bool(_edrops[0].acceptDrops()))
+        check("Qt 面板：无目标时『生成』不可点（与 Tk 侧同一份插件逻辑）",
+              lambda: ("生成" in _ebtns) and (not _ebtns["生成"].isEnabled()))
 
         # 布局语义：Tk 的 pack(side="left") 在这里必须落成同一水平行，其余自上而下堆叠
         _epars = {id(b.parentWidget()) for b in _ebtns.values()}
@@ -253,9 +261,9 @@ def main():
                       and isinstance(_ebtns["识别"].parentWidget().layout(), QW.QHBoxLayout))
 
         def _ecol():
-            """面板竖直序列：box → wrap（builder 的外层容器）→ 按钮行 / 路径标签 / 结果框。
+            """面板竖直序列：box → wrap（builder 的外层容器）→ 按钮行 / 提示行 / 结果框。
 
-            多一层 wrap 是对的：Tk 侧同样是 LabelFrame → wrap(ttk.Frame) → row/label/tv。
+            多一层 wrap 是对的：Tk 侧同样是 LabelFrame → wrap(ttk.Frame) → row/hint/tv。
             """
             lay = _ebox.layout()
             if lay is None or lay.count() == 0:
@@ -276,27 +284,39 @@ def main():
         _ecol_txt = (["%s/%s" % (t, "V" if _ecol_vertical() else "H")
                       for t in _ecol()[:3]] if _ebox else None)
         print("        面板竖直序列：%r" % (_ecol_txt,))
-        check("外层容器是竖直堆叠（Tk 默认 pack 方向），顺序 = 按钮行 → 路径标签 → 结果框",
+        check("外层容器是竖直堆叠（Tk 默认 pack 方向），顺序 = 按钮行 → 提示行 → 结果框",
               lambda: _ecol()[:3] == ["QWidget", "QLabel", "QPlainTextEdit"]
                       and _ecol_vertical())
 
-        # 回调真的绑上了：把插件的 GUI 流程换成记录器再点（不弹对话框）
+        # 回调真的绑上了：把插件的 GUI 流程换成记录器再点（不弹对话框）。
+        # 面板契约里"生成"无目标时不可点，所以这里先给目标再点 —— 顺带验了
+        # "设了目标后可点"（两个后端走的是**同一份**插件逻辑）。
         _eng = next((p["module"] for p in mgr.plugins
                      if p.get("file") == "engine_utf8_patch.py"), None)
+        _orig_path = _eng._STATE.get("path") if _eng is not None else None
+        if _eng is not None:
+            _eng._STATE["path"] = "<qt-probe-target>"
+            _eng._sync_actions()
+        check("Qt 面板：设了目标后『生成』可点",
+              lambda: ("生成" in _ebtns) and _ebtns["生成"].isEnabled())
+
         _calls = []
         _orig_run = getattr(_eng, "_gui_run", None) if _eng is not None else None
         if _orig_run is not None:
             _eng._gui_run = lambda op, parent=None: _calls.append(op)
         try:
-            for _n in ("识别", "校验", "生成"):
+            for _n in ("识别", "生成"):
                 if _n in _ebtns:
                     _ebtns[_n].click()
         finally:
             if _orig_run is not None:
                 _eng._gui_run = _orig_run
+            if _eng is not None:
+                _eng._STATE["path"] = _orig_path or ""
+                _eng._sync_actions()
         print("        点击后进入插件流程的动作：%r" % (_calls,))
-        check("三个按钮点了真的进插件流程（回调不是空的）",
-              lambda: _calls == ["identify", "verify", "apply"])
+        check("两个按钮点了真的进插件流程（回调不是空的）",
+              lambda: _calls == ["identify", "apply"])
 
         # 源码级：插件里不能再有 Tk 专有构造/对话框（docstring 里的说明字不算）
         def _tk_uses_in_plugin_source():
@@ -353,7 +373,13 @@ def main():
               lambda: any(k == "panel" and s == "skip" and "tk-only" in why
                           for k, s, why in _tko))
 
-        check("报告里可移植贡献全部 ok", lambda: rep.counts().get("ok", 0) >= 3)
+        # 判据从"至少 3 条 ok"改成"**没有任何 skip/fail**"：2026-09-13 面板改造把
+        # 重复的 toolbar 入口删掉了（同一条贡献数从 4 变 1），按条数钉住会把
+        # "有意去重"误判成回归；本条真正要守的是"可移植贡献没有一条被跳过或失败"。
+        check("报告里可移植贡献全部 ok（没有 skip/fail 行）",
+              lambda: rep.counts().get("ok", 0) >= 1
+                      and not rep.counts().get("skip", 0)
+                      and not rep.counts().get("fail", 0))
 
         # 双后端：同一份插件源码，Qt 侧与 Tk 侧都要能建出控件
         DUAL = ('PLUGIN_INFO = {"name": "dual"}\n'

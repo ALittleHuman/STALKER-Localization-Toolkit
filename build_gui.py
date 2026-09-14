@@ -105,6 +105,9 @@ class BuildGUI:
         self.ent_version = themed_entry(r1, textvariable=self.var_version)
         self.ent_version.pack(side="left", fill="x", expand=True, ipady=2)
         tool_button(r1, "解析", command=self._on_parse).pack(side="left", padx=(6, 0))
+        # 版本号也是键的一半（键 = (完整版本串, 标记名)）：改版本号就要重算序号/预览，
+        # 否则界面上还挂着上一个版本的号（改到 1.0.2 却显示 ALPHA.4 这种）。
+        self.var_version.trace_add("write", lambda *a: self._on_version_edit())
 
         r2 = ttk.Frame(ver); r2.pack(fill="x", pady=(6, 0))
         ttk.Label(r2, text="标记:", width=6).pack(side="left")
@@ -153,7 +156,7 @@ class BuildGUI:
         paned.pack(fill="both", expand=True, padx=14, pady=(8, 4))
         log_lf = ttk.LabelFrame(paned, text=" 构建输出 ", padding=4)
         paned.add(log_lf, weight=1)
-        self.log = LogBox(log_lf, height=16, wrap="none")
+        self.log = LogBox(log_lf, height=16, wrap="none", hbar=True)
         self.log.pack(fill="both", expand=True)
 
         # ── 操作栏 ──
@@ -219,9 +222,52 @@ class BuildGUI:
         finally:
             self._syncing_marker = False
 
+    def _seq_for_channel(self, channel):
+        """该标记**自己的**下一个可用序号（按 (版本串, 标记名) 各自计数，只读不写）。
+
+        取的是与 `build.py` 自增时**同一个** `VER.next_prerelease()` 的 peek，
+        所以界面上显示的号就是"这个标记下一发会用的号"。`无` 没有序号 → "1"。
+        """
+        if not channel or channel == "无":
+            return "1"
+        try:
+            raw = self.var_version.get().strip()
+            base = VER.parse_full_version(raw)[0] if raw else None
+            nxt = VER.next_prerelease(tag=channel, base_version=base, consume=False)
+        except Exception:
+            return "1"
+        name, num = VER.split_prerelease(nxt)
+        return str(num) if (name and num) else "1"
+
+    def _sync_seq_to_channel(self):
+        """把「序号」改成当前标记的下一个号（不动版本号字段）。"""
+        self._sync_marker_fields(self.var_channel.get(),
+                                 self._seq_for_channel(self.var_channel.get()))
+
     def _on_marker_pick(self):
-        """用户选了标记下拉 → 从这一刻起"手动优先"（计数不再自增）。"""
+        """用户选了标记下拉 → 序号**跟着这个标记走**（用户口径 2026-09-14）。
+
+        为什么必须跟着改：键是 **(完整版本串, 标记名)**，序号各数各的
+        （ALPHA 数到 7、BETA 可能还停在 1）。旧实现只把值留在输入框里，
+        于是 ALPHA→BETA 之后序号还是 ALPHA 的号（"BETA.7" 这种从没发过的号）。
+        手动语义不变：这里是"手动优先"，构建时**原样使用、计数不动**。
+        """
         self.var_marker_manual = True
+        self._sync_seq_to_channel()
+        self._refresh_preview()
+        self._refresh_count_line()
+
+    def _on_version_edit(self, *_a):
+        """版本号也是键的一半：改了它，序号就要按新键重算。
+
+        自动模式下连序号一起重算（新版本 = 新键 → 从 .1 起）；手动模式只刷新
+        预览与「当前」行，**绝不动用户手填的号**（那正是"手动优先"的意思）。
+        程序化回填（`_syncing_marker`）不触发，否则解析/刷新会互相踩。
+        """
+        if self._syncing_marker:
+            return
+        if not self.var_marker_manual:
+            self._sync_seq_to_channel()
         self._refresh_preview()
         self._refresh_count_line()
 
