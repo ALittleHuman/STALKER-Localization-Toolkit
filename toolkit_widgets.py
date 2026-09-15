@@ -1499,21 +1499,26 @@ class CanvasTree:
         self.canvas._ctree = self  # 主题切换遍历时定位到本 wrapper
         self.vbar = AutoScrollbar(self.frame, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self._yscrollcmd)
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.vbar.pack(side="right", fill="y")
         # ★ 横向滚动条（用户 2026-09-15 问"fs 的滚动条呢？"）——
         #   改前树只有竖条，而且 `populate()` 把 scrollregion 写成 `(0, 0, 0, 高)`：
         #   **x 范围恒为 0**，所以就算有条子也滚不动；实测一条深路径
         #   （lvl=4 → 缩进 171px + 文件名 348px）在窄面板里尾巴直接看不到，
         #   而树是**路径列表**，横向被裁就是丢信息。
         #   条子只在真的装不下时出现（AutoScrollbar 的智能隐藏），装得下时零成本。
-        #   位置：竖条贴右（满高）、横条贴底（在 canvas 那一段下面）—— 与 LogBox 同一套排法。
         self.hbar = None
         if hbar:
             self.hbar = AutoScrollbar(self.frame, orient="horizontal",
                                       command=self.canvas.xview)
             self.canvas.configure(xscrollcommand=self.hbar.set)
+        # ★ pack 的**顺序**在这里是判据的一部分（2026-09-15 实测踩过）：
+        #   `expand=True` 的画布若先 pack，它会把剩余空间吃干净，之后 pack 的横条只能
+        #   分到**残渣** —— 实测横条恒为 44x15 且**常驻可见**（内容明明装得下），
+        #   界面上就是树底下一条莫名其妙的小滚动条。
+        #   正确顺序（与 LogBox 同一套）：竖条(右,满高) → 横条(底) → 画布(占剩余)。
+        self.vbar.pack(side="right", fill="y")
+        if self.hbar is not None:
             self.hbar.pack(side="bottom", fill="x")
+        self.canvas.pack(side="left", fill="both", expand=True)
         # 内容宽度（populate 时按真实行算）：scrollregion 的 x 范围、选中高亮的宽度、
         # 以及"大小"列要不要钉在视口右边都靠它。初值给 1，_draw 在任何时候都能跑。
         self._content_w = 1

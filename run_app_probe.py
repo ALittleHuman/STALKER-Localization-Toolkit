@@ -986,16 +986,19 @@ def _check_hidpi_and_titlebar():
           tree_row_items_aligned_to_checkbox)
 
     def tree_has_usable_hbar():
-        """树的横向滚动条必须**存在、且真能滚**（用户 2026-09-15："fs 的滚动条呢？"）。
+        """树的横/竖滚动条必须**撑满、该收就收、该出就出**（用户 2026-09-15 两问）。
 
-        改前两处都不对：`CanvasTree` **只建竖条**；而且 `populate()` 把 scrollregion
-        写成 `(0, 0, 0, 高)` —— x 范围恒为 0，等于**把横向滚动关掉了**（`xview()` 退化）。
-        实测一条深路径（lvl=4 → 缩进 171px + 文件名 348px）在窄面板里尾巴直接看不到。
-        判据（真建树 + 真读几何，含两个方向的接线）：
-          ① frame 里有横条、`xscrollcommand` 接着；
-          ② 塞一条**必然超宽**的长名字后 `xview()[1] < 1.0`（scrollregion 真被撑开）；
-          ③ `xview_moveto(1.0)` 后条子 `get()` 跟上（文本 → 条子）；
-          ④ 调条子的 `command moveto 0.0` 后 canvas 真回到最左（条子 → 文本）。
+        > "fs的滚动条呢？"  → 树只有竖条、且 scrollregion 的 x 范围恒为 0（横向滚不动）
+        > "我竖的滚动条是咋回事？" → 我第一版把横条 pack 在 `expand=True` 的画布**之后**，
+        >   它只能分到残渣：实测恒为 **44x15 且常驻可见**（内容装得下也不收），
+        >   白白多占 15px 高，还会把面板内容顶出去、让面板自己的竖条也冒出来
+        >   （= 用户看到的"竖的滚动条不对劲"）。
+
+        判据（真建树 + 真读几何，四条缺一不可）：
+          ① **装得下**（3 行短名、宽高都够）→ 两条都收起（`winfo_manager() == ""`）；
+          ② **超高**（80 行）→ 竖条可见且**高 ≈ 容器高**（不是残渣）；
+          ③ **超宽**（长名字）→ 横条可见且**宽 ≈ 容器宽**（不是残渣）；
+          ④ 两向接线：文本 → 条子（`get()` 跟上）、条子 → 文本（调 command 后真移动）。
         """
         import toolkit_widgets as _W
         import toolkit_theme as _th
@@ -1008,29 +1011,58 @@ def _check_hidpi_and_titlebar():
             def dir_state(self):
                 return None
 
-        host = tk.Frame(_ROOT, width=_th.px(220), height=_th.px(120))
+        # ★ 量滚动条必须给它一块**真空间**：探针的根窗口里已经塞了六个 App 的页面，
+        #   再往根上 pack 一个固定尺寸的夹具会被挤成 1x1 → 画布恒"装不下" → 判据全假。
+        #   所以夹具放**独立 Toplevel**（自己的窗口，自己的几何）。
+        win = tk.Toplevel(_ROOT)
+        win.geometry("%dx%d" % (_th.px(240), _th.px(160)))
+        host = tk.Frame(win, width=_th.px(220), height=_th.px(120))
         host.pack_propagate(False)          # 固定窄容器：不这样会被 canvas 请求宽撑开
         ct = _W.CanvasTree(host, with_chk=True)
         try:
             host.pack()
             ct.get().pack(fill="both", expand=True)
-            root = _N("gamedata", True, "gamedata")
-            deep = root
-            for lvl in range(4):           # 造一条层级很深的路径
-                nxt = _N("level%d" % lvl, True, deep.path + "/lvl%d" % lvl)
-                deep.children[nxt.name] = nxt
-                deep = nxt
-            long_name = "very_long_file_name_" + "x" * 90 + ".xml"
-            deep.children[long_name] = _N(long_name, False, deep.path + "/" + long_name)
-            ct.set_root(root)
-            ct._expanded.update([root] + [c for c in _walk_dirs(root)])
-            ct.populate()
-            _ROOT.update_idletasks()
-            _ROOT.update()
+
+            def fill(rows, long_name):
+                root = _N("gamedata", True, "gamedata")
+                for i in range(rows):
+                    nm = ("f%03d_" % i) + ("n" * 40 if long_name else "n") + ".xml"
+                    root.children[nm] = _N(nm, False, "gamedata/" + nm)
+                ct.set_root(root)
+                ct._expanded.add(root)
+                ct.populate()
+                _ROOT.update_idletasks()
+                _ROOT.update()
+
+            # 注：探针的根窗口是 withdraw 的，`winfo_ismapped()` 恒为 0 —— 这里只能看
+            # "有几何管理器 + 拿到真实尺寸"（真机可见性由截图那张表核对）。
+            def vis(bar):
+                return bool(bar is not None and bar.winfo_manager()
+                            and bar.winfo_width() > 1)
+
             assert ct.hbar is not None, "树没有横向滚动条"
             assert str(ct.canvas.cget("xscrollcommand")), "xscrollcommand 没接上"
+            slack = _th.px(24)
+
+            fill(3, False)                  # ① 装得下 → 两条都收起
+            assert not vis(ct.vbar) and not vis(ct.hbar), \
+                "内容装得下时两条都不该露出来（竖 %r / 横 %r）" % (
+                    ct.vbar.winfo_manager(), ct.hbar.winfo_manager())
+
+            fill(80, False)                 # ② 超高 → 竖条可见且撑满 (可能同时超宽→也允许横条)
+            assert vis(ct.vbar), "80 行还不出现竖滚动条"
+            assert ct.vbar.winfo_height() >= ct.frame.winfo_height() - slack, \
+                "竖条没撑满（残渣）：条高 %d / 容器高 %d" % (
+                    ct.vbar.winfo_height(), ct.frame.winfo_height())
+
+            fill(80, True)                  # ③ 超宽 → 横条可见且撑满
+            assert vis(ct.hbar), "超宽内容还不出现横滚动条"
+            assert ct.hbar.winfo_width() >= ct.frame.winfo_width() - slack, \
+                "横条没撑满（分到残渣了？）：条宽 %d / 容器宽 %d" % (
+                    ct.hbar.winfo_width(), ct.frame.winfo_width())
             assert ct.canvas.xview()[1] < 1.0, \
                 "超宽内容下横向没得滚（scrollregion 的 x 范围还是 0？）：%r" % (ct.canvas.xview(),)
+            # ④ 两向接线
             ct.canvas.xview_moveto(1.0)
             _ROOT.update_idletasks()
             assert abs(ct.hbar.get()[1] - ct.canvas.xview()[1]) < 1e-6, \
@@ -1040,11 +1072,9 @@ def _check_hidpi_and_titlebar():
             _ROOT.tk.call(cmd, "moveto", 0.0)
             _ROOT.update_idletasks()
             assert ct.canvas.xview()[0] == 0.0, "拖横条没能把文本移回最左：%r" % (ct.canvas.xview(),)
-            assert ct.hbar.winfo_manager() == "pack", ct.hbar.winfo_manager()
-            assert ct.hbar.winfo_width() > 1, ct.hbar.winfo_width()
         finally:
             try:
-                host.destroy()
+                win.destroy()
             except Exception:
                 pass
 
@@ -1054,7 +1084,7 @@ def _check_hidpi_and_titlebar():
                 yield c
                 yield from _walk_dirs(c)
 
-    check("HiDPI：树的横向滚动条存在且两向真接线（深路径尾巴能拖到）",
+    check("HiDPI：树的横/竖滚动条撑满、该收就收、该出就出（含两向接线）",
           tree_has_usable_hbar)
 
     def treeview_rowheight_scaled():

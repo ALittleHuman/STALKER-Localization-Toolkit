@@ -179,7 +179,7 @@ INJECTIONS = [
     (BG, "run_build_probe.py", "构建输出退回只有竖条（wrap=none 的长行尾巴拖不到）",
      'LogBox(log_lf, height=16, wrap="none", hbar=True)',
      'LogBox(log_lf, height=16, wrap="none")',
-     "GUI：构建输出（wrap=none）有横向滚动条"),
+     "GUI：构建输出（wrap=none）的横/竖滚动条该收就收"),
     # ㉕㉖ 树行内对齐（2026-09-14 用户口径："勾选框和三角、文字是错位的，统一以勾选框为准"）
     #   两条分别打"各元素各写各的 y+12"与"不给三角留槽（左半边画到画布外）"。
     (TW, "run_app_probe.py", "三角/文字退回写死的 y+12（与勾选框错位）",
@@ -210,11 +210,25 @@ INJECTIONS = [
     (TW, "run_app_probe.py", "树退回只有竖条（长路径的尾巴看不到）",
      "                 hbar=True):",
      "                 hbar=False):",
-     ("fs：三棵树都有横向滚动条", "HiDPI：树的横向滚动条存在且两向真接线")),
+     ("fs：三棵树都有横向滚动条", "HiDPI：树的横/竖滚动条撑满")),
     (TW, "run_app_probe.py", "scrollregion 的 x 范围退回 0（横向滚不动）",
      "        self._content_w = self._measure_content_w()",
      "        self._content_w = 0   # 注入：关掉横向滚动",
-     "HiDPI：树的横向滚动条存在且两向真接线"),
+     "HiDPI：树的横/竖滚动条撑满"),
+    # ㉜ 把 pack 顺序打回"画布先占（expand）"——2026-09-15 真实踩过的那一版：
+    #     横条只能分残渣（恒 44x15）且**常驻可见**，还会顶得面板自己的竖条冒出来。
+    #     注意 toolkit_widgets.py 是 **CRLF**，多行锚点里的 `\n` 匹配不上 →
+    #     这里显式写 `\r\n`（先例见 ARCHITECTURE §7.3 的注入行尾说明）。
+    (TW, "run_app_probe.py", "树的两条滚动条 pack 顺序打回错的那版（横条分残渣）",
+     '        self.vbar.pack(side="right", fill="y")\r\n'
+     '        if self.hbar is not None:\r\n'
+     '            self.hbar.pack(side="bottom", fill="x")\r\n'
+     '        self.canvas.pack(side="left", fill="both", expand=True)',
+     '        self.canvas.pack(side="left", fill="both", expand=True)\r\n'
+     '        self.vbar.pack(side="right", fill="y")\r\n'
+     '        if self.hbar is not None:\r\n'
+     '            self.hbar.pack(side="bottom", fill="x")',
+     "HiDPI：树的横/竖滚动条撑满"),
 ]
 
 
@@ -232,6 +246,24 @@ def main():
             return 0
     orig = {p: io.open(p, "rb").read() for p in TARGETS}
     orig_sha = {p: sha(b) for p, b in orig.items()}
+    # ★ 启动自检：上一轮若被**强杀**（工具超时 / KILL），`finally` 没跑到 ——
+    #   注入文本会留在树里。此时若直接跑，会把"被注入的版本"当成基线，于是那条
+    #   注入点找不到（[SKIP]）、洞被静默带过去。2026-09-15 实测踩到一次
+    #   （`font_pack.py` 里留着 `if False:  # 注入：上限判据失效`）。
+    dirty = []
+    for p in TARGETS:
+        try:
+            txt = io.open(p, encoding="utf-8").read()
+        except Exception:
+            continue
+        if "# 注入" in txt or "注入：" in txt:
+            dirty.append(os.path.basename(p))
+    if dirty:
+        print("[拒绝启动] 这些目标文件里还留着**注入文本**（上一次运行被强杀，finally 没跑到）：")
+        for n in dirty:
+            print("    " + n)
+        print("    先还原（git checkout -- <文件>）再重跑本脚本 —— 否则会把脏版本当基线。")
+        return 2
     for p in TARGETS:
         print("%s sha256=%s bytes=%d" % (os.path.basename(p), orig_sha[p], len(orig[p])))
     bad = 0

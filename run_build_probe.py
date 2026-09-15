@@ -1157,12 +1157,16 @@ def test_build_gui_construction():
             """构建输出是 `wrap="none"`：长行的尾巴必须**拖得到**（用户口径 2026-09-14）。
 
             现象（真窗口实测）：只有竖条时 `log.xview()=(0.0, 0.06)` —— 94% 的行宽
-            看得见却没有任何可拖的东西（"还有，滚动条呢？"）。判据三条，全是实测：
+            看得见却没有任何可拖的东西（"还有，滚动条呢？"）。判据五条，全是实测：
               ① 同一个容器里横竖各一条 AutoScrollbar；
-              ② 文本滚动 → 条子跟上（xscrollcommand 真接着），拖条子 → 文本真横移；
-              ③ 条子有几何管理器且有真实尺寸（不是 1x1 的假可见）。
+              ② 空日志时两条都**收起**（装得下就不该露出来 —— 智能隐藏口径）；
+              ③ 溢出时横条可见且**宽 ≈ 容器宽**（pack 顺序写错会分到残渣：实测
+                 44x15，那正是"树/日志底下一条莫名其妙的小滚动条"的来源）；
+              ④ 竖条同理：有内容溢出时高 ≈ 容器高；
+              ⑤ 两向接线：文本 → 条子（`get()` 跟上）、条子 → 文本（调 command 后真移动）。
             """
             from toolkit_widgets import AutoScrollbar as _ASB
+            import toolkit_theme as _th
             log = app.log
             assert str(log.cget("wrap")) == "none", log.cget("wrap")
             bars = [w for w in log.master.winfo_children() if isinstance(w, _ASB)]
@@ -1170,26 +1174,61 @@ def test_build_gui_construction():
             vs = [b for b in bars if str(b.cget("orient")) == "vertical"]
             assert len(hs) == 1 and len(vs) == 1, \
                 "构建输出的滚动条不齐（横 %d / 竖 %d）：%r" % (len(hs), len(vs), bars)
+
+            # 注：探针根窗口是 withdraw 的，`winfo_ismapped()` 恒为 0 —— 判"在不在"
+            # 只能看"有几何管理器 + 真实尺寸"（真机可见性由截图核对）。
+            # ★ 但"该收就收"必须**真的布局出来**才有意义：withdrawn 时控件恒为 1x1，
+            #   什么内容都"装不下"，两条条子会常驻可见 —— 那是探针环境假象，不是缺陷。
+            def vis(b):
+                return bool(b.winfo_manager() and b.winfo_width() > 1)
+
+            def measure():
+                app.root.update_idletasks()
+                app.root.update()
+
+            app.root.deiconify()
+            measure()
+
+            # ② 先清空：装得下时两条都收起
+            log.configure(state="normal"); log.delete("1.0", "end")
+            log.configure(state="disabled")
+            app.root.update_idletasks()
+            assert not vis(hs[0]) and not vis(vs[0]), \
+                "空日志时滚动条该收起：横 %r 竖 %r" % (
+                    hs[0].winfo_manager(), vs[0].winfo_manager())
+            # ③④ 溢出：两条都要出现且撑满（不是残渣）
+            for i in range(80):
+                log.add("行 %d" % i)
             log.add("LONG-" + "x" * 4000)
             log._flush()
             app.root.update_idletasks()
             assert log.xview()[1] < 1.0, "内容没有横向溢出，这条锁等于没跑：%r" % (log.xview(),)
-            # ②-a 文本 → 条子
+            container = log.master
+            assert vis(hs[0]), "溢出了却不出现横条（pack 顺序错了？）"
+            # 参照物取**文本自己**（不是外层 LabelFrame：那道边框+标题占 ~46px，
+            # 拿它当参照会让"撑满"永远差一截）。
+            assert hs[0].winfo_width() >= log.winfo_width() - _th.px(24), \
+                "横条没撑满（分到残渣了？）：条宽 %d / 文本宽 %d" % (
+                    hs[0].winfo_width(), log.winfo_width())
+            assert vis(vs[0]), "溢出了却不出现竖条"
+            assert vs[0].winfo_height() >= log.winfo_height() - _th.px(24), \
+                "竖条没撑满：条高 %d / 文本高 %d" % (
+                    vs[0].winfo_height(), log.winfo_height())
+            assert container is not None
+            # ⑤-a 文本 → 条子
             log.xview_moveto(1.0)
             app.root.update_idletasks()
             assert abs(hs[0].get()[1] - log.xview()[1]) < 1e-6, \
                 "横条没跟上文本：条子 %r，文本 %r" % (hs[0].get(), log.xview())
-            # ②-b 条子 → 文本（条子的 command 就是文本的 xview）
+            # ⑤-b 条子 → 文本（条子的 command 就是文本的 xview）
             cmd = str(hs[0].cget("command"))
             assert cmd, "横条的 command 没接上"
             app.root.tk.call(cmd, "moveto", 0.0)
             app.root.update_idletasks()
             assert log.xview()[0] == 0.0, \
                 "拖横条没能把文本移回去：%r" % (log.xview(),)
-            # ③ 真的布局出来了（有管理器 + 真实尺寸）
-            assert hs[0].winfo_manager() == "pack", hs[0].winfo_manager()
-            assert hs[0].winfo_width() > 1, hs[0].winfo_width()
-        check("GUI：构建输出（wrap=none）有横向滚动条且真接线",
+            app.root.withdraw()          # 量完恢复无头（后续用例照旧）
+        check("GUI：构建输出（wrap=none）的横/竖滚动条该收就收、该出就出且撑满",
               _log_has_hbar)
 
         # 上面几条把标记切成了"手动"；后面还有预览/解析用例，先还原成"打开构建器
