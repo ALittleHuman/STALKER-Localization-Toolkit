@@ -67,6 +67,7 @@ from tkinter import ttk                   # noqa: E402
 from toolkit_base import _BaseTk          # noqa: E402
 from toolkit_theme import apply_theme, px  # noqa: E402
 import toolkit_widgets as W                # noqa: E402
+from stalker_toolkit import BUILTIN_TOOLS, page_min_h  # noqa: E402
 
 FAILS = []          # 断言失败（含"装不下却看不到滚动条"）
 
@@ -233,6 +234,11 @@ def _panel_factory(parent):
     return p
 
 
+# 页面清单：夹具页 + **全部六个真栏目**（用户 2026-09-15："其他小窗口也是一样"——
+# 只查 fs 那一页等于抽样推广，这里按 Hub 的真实结构把六个栏目全建出来逐页量）。
+PAGES = [("滚动面板夹具", _panel_factory)] + list(BUILTIN_TOOLS)
+
+
 def build_real_pages(root):
     """按 Hub 的真实结构搭：Notebook + 每页一层页面视口 + 页内真组件。
 
@@ -245,10 +251,10 @@ def build_real_pages(root):
     nb = ttk.Notebook(root)
     nb.pack(fill="both", expand=True)
     pages = []
-    for label, factory in (("文件系统", _fs_factory), ("滚动面板夹具", _panel_factory)):
+    for label, factory in PAGES:
         tab = tk.Frame(nb)
         nb.add(tab, text=label)
-        page_view = W.ScrollViewport(tab, fit="content", minsize_y=px(430))
+        page_view = W.ScrollViewport(tab, fit="content", minsize_y=page_min_h())
         page_view.pack(fill="both", expand=True)
         try:
             app = factory(page_view.content)
@@ -324,6 +330,57 @@ def audit_all_panels(host, tag):
     return n, bad
 
 
+def _trees_of(app):
+    """app 上挂着的 `CanvasTree` 包装对象（`CanvasTree(...)` 返回的不是控件）。"""
+    if app is None:
+        return []
+    try:
+        return [(k, v) for k, v in vars(app).items() if isinstance(v, W.CanvasTree)]
+    except Exception:
+        return []
+
+
+def audit_two_way(page_view, app, tag):
+    """**两向不变量**（用户判据 2026-09-15）：能滚 ⇒ 必须有条；装得下 ⇒ 不许有条。
+
+    用户原话："没有出现滚动条的时候应当能被滚动吗？"
+    "我滚动，然后 DB 栏没有任何滚动条的自己滚起来了，其他小窗口也是一样。"
+
+    ★ 只查**契约明确的**控件（`ScrollViewport` 的 canvas + 它自己的 vbar/hbar；
+    `CanvasTree` 的 canvas + 它自己的 vbar/hbar）。**不做启发式找条**：第一版我按
+    "画布 master 子树里的 AutoScrollbar" 猜，一次跑出 50 条假阳性（既是漏报也是误报，
+    这种锁比没有更坏 —— 见 ARCHITECTURE「死锁/假锁」那两条）。
+    """
+    bad = 0
+    targets = [("%s 页面视口" % tag, page_view.canvas, page_view.vbar, page_view.hbar)]
+    for vp in walk_viewports(page_view):
+        if vp is not page_view:
+            targets.append(("%s 面板视口" % tag, vp.canvas, vp.vbar, vp.hbar))
+    for nm, tree in _trees_of(app):
+        targets.append(("%s 树(%s)" % (tag, nm), tree.canvas, tree.vbar,
+                        getattr(tree, "hbar", None)))
+    for name, cv, vbar, hbar in targets:
+        if cv is None or cv.winfo_width() <= 1 or cv.winfo_height() <= 1:
+            continue
+        try:
+            xv, yv = cv.xview(), cv.yview()
+        except tk.TclError:
+            continue
+        for axis, view, bar in (("纵", yv, vbar), ("横", xv, hbar)):
+            can = not (view[0] <= 0.0 and view[1] >= 1.0)
+            vis = bar is not None and bar_really_visible(bar_state(bar))
+            if can and not vis:
+                bad += 1
+                FAILS.append("%s %s轴：**能滚却看不到条**（view=%r）—— "
+                             "「看不见的滚动」就是用户报的那个"
+                             % (name, axis, tuple(round(v, 3) for v in view)))
+            elif vis and not can:
+                bad += 1
+                FAILS.append("%s %s轴：装得下却仍占着条（view=%r）"
+                             % (name, axis, tuple(round(v, 3) for v in view)))
+    return bad
+
+
 def audit_panel_wiring(app):
     """核对 `ScrollPanel` 与 fs_app 两面板"**直接当窗格**"的用法与实现是否一致。
 
@@ -396,12 +453,16 @@ def main():
     skipped = 0
     n_panels = 0
     bad_panels = 0
+    bad_two = 0
     print("=" * 112)
     print("真页面滚动条审计（判定用 Tk 自己的 xview/yview；每页都先 select 再量）")
     print("=" * 112)
 
     print("\n面板用法核对（ScrollPanel 直接当窗格 + minsize 由内容自己说）：")
-    audit_panel_wiring(pages[0][3])
+    fs_app = next((a for (_l, _t, _v, a) in pages
+                   if a is not None and hasattr(a, "db_panel")), None)
+    if fs_app is not None:
+        audit_panel_wiring(fs_app)
 
     # ★ 类级契约：**所有**页面里**所有**面板，fit 必须与"body 里有没有自带滚动条"一致
     print("\n面板用法核对（全页面，类级契约：弹性内容 ⇒ fit=viewport）：")
@@ -441,14 +502,17 @@ def main():
                     continue
                 print(line(tag, st))
                 total_bad += check_one("窗口%dx%d %s" % (w_, h_, tag), vp, st)
+            # ★ 两向不变量：**能滚⇒有条；装得下⇒不许有条**（对每页的视口与树都查）
+            bad_two += audit_two_way(page_view, app,
+                                     "窗口%dx%d 页%d %s" % (w_, h_, idx, label))
 
     # ── 反复 宽↔窄：隐藏再出现多次仍要正确（用户口径里的"智能隐藏"）──
     print("\n" + "=" * 112)
     print("反复 宽↔窄 8 轮（夹具页面板）：横条应当 收→出→收→出 每次都真的可见")
     print("=" * 112)
-    nb.select(1)
+    nb.select(0)
     pump(root, 6)
-    panel = pages[1][3]
+    panel = pages[0][3]
     for i in range(8):
         wide = (i % 2 == 0)
         root.geometry("%dx520+60+60" % (1300 if wide else 640,))
@@ -465,6 +529,7 @@ def main():
           % (total_bad, skipped))
     print("面板用法核对（全页面）：查了 %d 个面板，违约 %d 个（必须为 0）"
           % (n_panels, bad_panels))
+    print("两向不变量（能滚⇒有条；没条⇒滚不动）：违约 %d 处（必须为 0）" % bad_two)
     if FAILS:
         print("失败断言 %d 条：" % len(FAILS))
         for f in FAILS[:40]:
@@ -480,7 +545,7 @@ def main():
         root.destroy()
     except Exception:
         pass
-    return 0 if (total_bad == 0 and bad_panels == 0 and not FAILS) else 1
+    return 0 if (total_bad == 0 and bad_panels == 0 and bad_two == 0 and not FAILS) else 1
 
 
 if __name__ == "__main__":

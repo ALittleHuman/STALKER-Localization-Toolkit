@@ -253,6 +253,14 @@ INJECTIONS = [
      'panel = ScrollPanel(pan, "数据包列表（.db / .sq）")',
      ("fs：弹性树的面板在没有可滚内容时", "面板用法核对：db_panel",
       "面板用法核对（全页面）")),
+    # ㉟ 两向不变量的**反方向**：能滚却看不到条（= 用户报的"没有滚动条却自己滚起来"）。
+    #     把竖条的 pack 打断（条子永远藏起来）→ 页面/面板/树只要有一处能滚就必红。
+    (TW, "run_scroll_audit.py", "竖条永不 pack（能滚却看不到条）",
+     '        if vbar is not None and vbar.visible():\r\n'
+     '            vbar.pack(side="right", fill="y")',
+     '        if False:                      # 注入：竖条永不 pack（藏着的滚动）\r\n'
+     '            vbar.pack(side="right", fill="y")',
+     "能滚却看不到条"),
 ]
 
 
