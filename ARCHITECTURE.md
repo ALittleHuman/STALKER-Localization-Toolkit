@@ -1536,6 +1536,26 @@ Tk 侧 `load_user_theme/save_user_theme` 读写 `user.ltx`，路径来自 `toolk
 
 **真机截图**（`%TEMP%` 一次性脚本 + `PrintWindow`）：同一个 `CanvasTree` 控件在真窗口里，勾选框、三角、文件名三者同高 ✓。
 
+### 11.10 2026-09-15（追加）：fs 页三棵树的横向滚动条
+
+> "fs的滚动条呢？"
+
+实测（真窗口 + 真 `FSToolApp`，读 manager/宽高/ismapped 与 `scrollregion`）：
+
+| 部件 | 竖条 | 横条 | 备注 |
+|---|---|---|---|
+| `ScrollPanel` 数据包列表 / 包内文件 | ✓ 智能隐藏（装得下时 manager=`""`、1×1、ismapped=0） | ✓ 同左 | 面板本来就有两条 |
+| `CanvasTree` ×3（`db_ctree` / `ctree` / `pack_ctree`） | ✓ 需要时出现 | **完全没有** | 而且 `populate()` 把 scrollregion 写成 `(0, 0, 0, 高)` —— **x 范围恒为 0**，等于把横向滚动关掉了 |
+
+后果可量：一条深路径（lvl=4 → 缩进 171px + 文件名 348px = 640px）在窄面板里尾巴直接看不到，而树是**路径列表**，横向被裁就是丢信息。
+
+改法（与构建器日志 `hbar` 同一套）：`CanvasTree(..., hbar=True)` **默认建横条**（只在装不下时出现）；`populate()` 用 `_measure_content_w()` 把"缩进 + 勾选框/三角 + 文件名（+ 状态文本）"算出来，写进 scrollregion 的 x 范围（再给右侧"大小"列留 `px(64)`）；顺带两处细节——选中高亮盖住**整行内容**（否则横向滚动后那半截没高亮）、"大小"列钉在**视口**右边（`canvasx(0)+w-8`，未滚动时与改前逐像素一致）。三处 FS 树都用默认值，于是同一页里"面板有横条、树没有"的不一致消失。
+
+**锁**：`run_app_probe` "fs：三棵树都有横向滚动条" + "HiDPI：树的横向滚动条存在且两向真接线"（窄容器塞超长名字 → `xview()[1] < 1.0`；`xview_moveto` 后条子 `get()` 跟上；调条子 command 后 canvas 回到最左）。
+**注入**（30 → **32** 条）：`hbar=True`→`False`、`_content_w` 退回 0 —— 各自把对应锁弄红。
+
+**真机截图**（`%TEMP%` 脚本 + `PrintWindow`）：`E:\Software\Tools\DeepSeek Harness\fs_scrollbar_shot.png` —— 数据包列表与包内文件两棵树的**底部横条都出现了**，长文件名可以拖到头。
+
 ---
 
 ## 附录 A：如何复核行数

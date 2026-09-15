@@ -612,6 +612,21 @@ def main():
         check("fs._clear_db", f._clear_db)
         check("fs._clear_files", f._clear_files)
         check("fs._refresh_pack", f._refresh_pack)
+
+        def fs_trees_have_hbar():
+            """FS 页三棵树都要有**横向**滚动条（用户 2026-09-15："fs 的滚动条呢？"）。
+
+            页面上两个 `ScrollPanel` 本来就有横条，但三棵 `CanvasTree` 只有竖条，
+            且 `scrollregion` 的 x 范围恒为 0 —— 树是**路径列表**，深路径/长文件名的
+            尾巴就那么被裁掉了。三处都用同一个 `CanvasTree` 默认值（`hbar=True`）。
+            """
+            for name in ("db_ctree", "ctree", "pack_ctree"):
+                ct = getattr(f, name, None)
+                assert ct is not None, "找不到 %s" % name
+                assert getattr(ct, "hbar", None) is not None, "%s 没有横向滚动条" % name
+                assert str(ct.canvas.cget("xscrollcommand")), \
+                    "%s 的 xscrollcommand 没接上" % name
+        check("fs：三棵树都有横向滚动条（长路径的尾巴能看到）", fs_trees_have_hbar)
     else:
         print("  SKIP fs（构造失败）")
 
@@ -969,6 +984,78 @@ def _check_hidpi_and_titlebar():
                 pass
     check("HiDPI：树行内三角/文件名与勾选框对齐（三角整条在画布内、不压框）",
           tree_row_items_aligned_to_checkbox)
+
+    def tree_has_usable_hbar():
+        """树的横向滚动条必须**存在、且真能滚**（用户 2026-09-15："fs 的滚动条呢？"）。
+
+        改前两处都不对：`CanvasTree` **只建竖条**；而且 `populate()` 把 scrollregion
+        写成 `(0, 0, 0, 高)` —— x 范围恒为 0，等于**把横向滚动关掉了**（`xview()` 退化）。
+        实测一条深路径（lvl=4 → 缩进 171px + 文件名 348px）在窄面板里尾巴直接看不到。
+        判据（真建树 + 真读几何，含两个方向的接线）：
+          ① frame 里有横条、`xscrollcommand` 接着；
+          ② 塞一条**必然超宽**的长名字后 `xview()[1] < 1.0`（scrollregion 真被撑开）；
+          ③ `xview_moveto(1.0)` 后条子 `get()` 跟上（文本 → 条子）；
+          ④ 调条子的 `command moveto 0.0` 后 canvas 真回到最左（条子 → 文本）。
+        """
+        import toolkit_widgets as _W
+        import toolkit_theme as _th
+
+        class _N:
+            def __init__(self, name, is_dir=False, path=""):
+                self.name, self.is_dir, self.path = name, is_dir, path
+                self.size, self.children, self.checked = 10, {}, False
+
+            def dir_state(self):
+                return None
+
+        host = tk.Frame(_ROOT, width=_th.px(220), height=_th.px(120))
+        host.pack_propagate(False)          # 固定窄容器：不这样会被 canvas 请求宽撑开
+        ct = _W.CanvasTree(host, with_chk=True)
+        try:
+            host.pack()
+            ct.get().pack(fill="both", expand=True)
+            root = _N("gamedata", True, "gamedata")
+            deep = root
+            for lvl in range(4):           # 造一条层级很深的路径
+                nxt = _N("level%d" % lvl, True, deep.path + "/lvl%d" % lvl)
+                deep.children[nxt.name] = nxt
+                deep = nxt
+            long_name = "very_long_file_name_" + "x" * 90 + ".xml"
+            deep.children[long_name] = _N(long_name, False, deep.path + "/" + long_name)
+            ct.set_root(root)
+            ct._expanded.update([root] + [c for c in _walk_dirs(root)])
+            ct.populate()
+            _ROOT.update_idletasks()
+            _ROOT.update()
+            assert ct.hbar is not None, "树没有横向滚动条"
+            assert str(ct.canvas.cget("xscrollcommand")), "xscrollcommand 没接上"
+            assert ct.canvas.xview()[1] < 1.0, \
+                "超宽内容下横向没得滚（scrollregion 的 x 范围还是 0？）：%r" % (ct.canvas.xview(),)
+            ct.canvas.xview_moveto(1.0)
+            _ROOT.update_idletasks()
+            assert abs(ct.hbar.get()[1] - ct.canvas.xview()[1]) < 1e-6, \
+                "条子没跟上文本：条子 %r 文本 %r" % (ct.hbar.get(), ct.canvas.xview())
+            cmd = str(ct.hbar.cget("command"))
+            assert cmd, "横条的 command 没接上"
+            _ROOT.tk.call(cmd, "moveto", 0.0)
+            _ROOT.update_idletasks()
+            assert ct.canvas.xview()[0] == 0.0, "拖横条没能把文本移回最左：%r" % (ct.canvas.xview(),)
+            assert ct.hbar.winfo_manager() == "pack", ct.hbar.winfo_manager()
+            assert ct.hbar.winfo_width() > 1, ct.hbar.winfo_width()
+        finally:
+            try:
+                host.destroy()
+            except Exception:
+                pass
+
+    def _walk_dirs(node):
+        for c in node.children.values():
+            if c.is_dir:
+                yield c
+                yield from _walk_dirs(c)
+
+    check("HiDPI：树的横向滚动条存在且两向真接线（深路径尾巴能拖到）",
+          tree_has_usable_hbar)
 
     def treeview_rowheight_scaled():
         got = int(ttk.Style().lookup("Treeview", "rowheight") or 0)

@@ -206,6 +206,15 @@ INJECTIONS = [
      '        r = subprocess.run([tool, "--describe", path], capture_output=True, text=True,\n'
      '                           timeout=30,',
      ("引擎：外部工具输出显式指定 utf-8", "引擎：SquashFS 真实往返")),
+    # ㉚㉛ 树的横向滚动条（2026-09-15 用户问"fs 的滚动条呢？"）
+    (TW, "run_app_probe.py", "树退回只有竖条（长路径的尾巴看不到）",
+     "                 hbar=True):",
+     "                 hbar=False):",
+     ("fs：三棵树都有横向滚动条", "HiDPI：树的横向滚动条存在且两向真接线")),
+    (TW, "run_app_probe.py", "scrollregion 的 x 范围退回 0（横向滚不动）",
+     "        self._content_w = self._measure_content_w()",
+     "        self._content_w = 0   # 注入：关掉横向滚动",
+     "HiDPI：树的横向滚动条存在且两向真接线"),
 ]
 
 

@@ -1456,7 +1456,8 @@ class CanvasTree:
     CHK_PAD = 6
 
     def __init__(self, master, with_chk=True, on_toggle=None, on_click=None,
-                 chk_state=None, row_status=None, fmt_size=None, on_change=None):
+                 chk_state=None, row_status=None, fmt_size=None, on_change=None,
+                 hbar=True):
         self.with_chk = with_chk
         self.on_toggle = on_toggle
         self.on_click = on_click
@@ -1500,6 +1501,22 @@ class CanvasTree:
         self.canvas.configure(yscrollcommand=self._yscrollcmd)
         self.canvas.pack(side="left", fill="both", expand=True)
         self.vbar.pack(side="right", fill="y")
+        # ★ 横向滚动条（用户 2026-09-15 问"fs 的滚动条呢？"）——
+        #   改前树只有竖条，而且 `populate()` 把 scrollregion 写成 `(0, 0, 0, 高)`：
+        #   **x 范围恒为 0**，所以就算有条子也滚不动；实测一条深路径
+        #   （lvl=4 → 缩进 171px + 文件名 348px）在窄面板里尾巴直接看不到，
+        #   而树是**路径列表**，横向被裁就是丢信息。
+        #   条子只在真的装不下时出现（AutoScrollbar 的智能隐藏），装得下时零成本。
+        #   位置：竖条贴右（满高）、横条贴底（在 canvas 那一段下面）—— 与 LogBox 同一套排法。
+        self.hbar = None
+        if hbar:
+            self.hbar = AutoScrollbar(self.frame, orient="horizontal",
+                                      command=self.canvas.xview)
+            self.canvas.configure(xscrollcommand=self.hbar.set)
+            self.hbar.pack(side="bottom", fill="x")
+        # 内容宽度（populate 时按真实行算）：scrollregion 的 x 范围、选中高亮的宽度、
+        # 以及"大小"列要不要钉在视口右边都靠它。初值给 1，_draw 在任何时候都能跑。
+        self._content_w = 1
         self.rows = []
         self._sel = set()
         self._expanded = set()
@@ -1554,8 +1571,33 @@ class CanvasTree:
         self.rows = []
         if self.root:
             self._collect(self.root, "", self.q, 0)
-        self.canvas.configure(scrollregion=(0, 0, 0, max(len(self.rows) * self.ROW_H, 1)))
+        self._content_w = self._measure_content_w()
+        self.canvas.configure(
+            scrollregion=(0, 0, self._content_w, max(len(self.rows) * self.ROW_H, 1)))
         self._draw()
+
+    def _measure_content_w(self):
+        """一行最宽需要多少像素 —— 决定横向滚动条的 scrollregion 宽度。
+
+        改前 scrollregion 的 x 范围恒为 0，等于**关掉了横向滚动**（`xview()` 退化）。
+        这里把"缩进 + 勾选框/三角 + 文件名"都算进去，再给右侧留出"大小"列的位置
+        （那列在 _draw 里钉在视口右边，不参与横向滚动，所以要额外留）。
+        """
+        w = 1
+        for node, level, _p in self.rows:
+            if node is None:
+                continue
+            x = self.CHK_PAD + self.INDENT * level + (self.CHK + 6 if self.with_chk else 2)
+            w = max(w, x + self._mfont.measure(node.name))
+            if self.row_status is not None:
+                try:
+                    st = self.row_status(node)
+                except Exception:
+                    st = None
+                if st:
+                    w = max(w, x + self._mfont.measure(node.name) + 10
+                            + self._mfont.measure(str(st[0])))
+        return w + px(64)
 
     def _collect(self, node, parent_id, q, level):
         if node.path:
@@ -1635,7 +1677,10 @@ class CanvasTree:
             #   不再各写各的 `y + 12`（见 _row_center 的说明）。
             cy = self._row_center(i)
             if node is not None and node in self._sel:
-                c.create_rectangle(0, y, w, y + self.ROW_H, fill=T["selected"], outline="")
+                # 选中高亮要盖住**整行内容**（而不只是视口那一段）：横向滚动后
+                # 若只画到 `w`，滚过去的那半截就没有高亮。
+                sel_w = max(w, self._content_w)
+                c.create_rectangle(0, y, sel_w, y + self.ROW_H, fill=T["selected"], outline="")
             x = self.CHK_PAD + self.INDENT * level
             if node is None:
                 c.create_text(x + self.CHK + px(6), cy, text="(空)",
@@ -1660,7 +1705,9 @@ class CanvasTree:
                     c.create_text(tx + self._mfont.measure(node.name) + 10, cy,
                                   text=text, anchor="w", fill=color_, font=T["font_sm"])
             if not node.is_dir:
-                c.create_text(w - 8, cy, text=self.fmt_size(node.size),
+                # "大小"列钉在**视口**右边（不随横向滚动跑掉）：未滚动时 canvasx(0)=0，
+                # 与改前逐像素一致；横向滚动后才看得出它是固定列。
+                c.create_text(c.canvasx(0) + w - 8, cy, text=self.fmt_size(node.size),
                               anchor="e", fill=T["text_dim"], font=T["font_mono"])
 
     def _draw_chk(self, c, x, y, node):
