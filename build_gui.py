@@ -151,17 +151,15 @@ class BuildGUI:
                        "内侧应用名带版本号，例 1.0.0 BETA.1",
                   kind="dim", padx=0, pady=(4, 0))
 
-        # ── 日志 ──
-        paned = SplitPane(self.root, orient="vertical")
-        paned.pack(fill="both", expand=True, padx=14, pady=(8, 4))
-        log_lf = ttk.LabelFrame(paned, text=" 构建输出 ", padding=4)
-        paned.add(log_lf, weight=1)
-        self.log = LogBox(log_lf, height=16, wrap="none", hbar=True)
-        self.log.pack(fill="both", expand=True)
-
         # ── 操作栏 ──
+        # ★ 必须**先占底部**，再让日志区 expand（2026-09-15 修，用户："下面按钮没显示，
+        #   但是没有滚动条"）。pack 按**调用顺序**分配空间：原来日志区（expand）先 pack、
+        #   操作栏最后 pack，窗口一矮操作栏就分不到空间 —— 实测 `y=0 h=1 ismapped=0`
+        #   （整条被 unmap），而"开始构建"是本窗口的主操作区，绝不能被切。
+        #   side="bottom" 先把它的高度预定下来，剩下的才给日志区（日志区自己有滚动条，
+        #   被压缩也能用）。
         bar = ttk.Frame(self.root)
-        bar.pack(fill="x", padx=14, pady=(0, 12))
+        bar.pack(side="bottom", fill="x", padx=14, pady=(0, 12))
         # 「保存版本号与标记」按钮已删除（用户口径 2026-09-12）：它是**第二条写盘路径**，
         # 与"单一事实来源"冲突，而且"先保存再构建"的顺序会让人以为构建用的是别处的值。
         # 现在版本号/标记在**每次构建开始时自动保存**（见 build.py:main），
@@ -173,6 +171,15 @@ class BuildGUI:
         self.btn_stop = tool_button(bar, "停止", command=self._on_stop)
         self.btn_stop.pack(side="left", padx=(8, 0))
         self.btn_stop.configure(state="disabled")
+        self.bar = bar
+
+        # ── 日志（放在操作栏之后 pack：它才是那个 expand 的）──
+        paned = SplitPane(self.root, orient="vertical")
+        paned.pack(fill="both", expand=True, padx=14, pady=(8, 4))
+        log_lf = ttk.LabelFrame(paned, text=" 构建输出 ", padding=4)
+        paned.add(log_lf, weight=1)
+        self.log = LogBox(log_lf, height=16, wrap="none", hbar=True)
+        self.log.pack(fill="both", expand=True)
 
     # ── 状态 ───────────────────────────────────────────────
     def _set_status(self, text, kind="idle"):

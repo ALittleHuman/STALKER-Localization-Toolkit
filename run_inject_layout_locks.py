@@ -229,6 +229,19 @@ INJECTIONS = [
      '        if self.hbar is not None:\r\n'
      '            self.hbar.pack(side="bottom", fill="x")',
      "HiDPI：树的横/竖滚动条撑满"),
+    # ㉝ 操作栏被切（2026-09-15 用户："下面按钮没显示，但是没有滚动条"）：
+    #     等价于**旧顺序** —— 先有一个"请求高很大且 expand"的兄弟把空间吃光，
+    #     最后 pack 的操作栏就分不到（unmap）。★ 第一版注入插了个**空 SplitPane**：
+    #     它请求高很小 → 根本没挤到操作栏 → 探针全绿，注入器当场报"锁没抓住这个错"
+    #     （注入本身写错也是要记的：判据是"注入必须真的复现那个机制"）。
+    (BG, "run_build_probe.py", "操作栏被切（大请求高的兄弟先占、操作栏最后 pack）",
+     '        bar = ttk.Frame(self.root)\n'
+     '        bar.pack(side="bottom", fill="x", padx=14, pady=(0, 12))',
+     '        _pin = tk.Frame(self.root, height=px(900), width=px(1))  # 注入：先占高度\n'
+     '        _pin.pack(fill="both", expand=True)\n'
+     '        bar = ttk.Frame(self.root)\n'
+     '        bar.pack(side="bottom", fill="x", padx=14, pady=(0, 12))',
+     "GUI：操作栏（开始构建…）在最小窗口下也不被切"),
 ]
 
 

@@ -1231,6 +1231,39 @@ def test_build_gui_construction():
         check("GUI：构建输出（wrap=none）的横/竖滚动条该收就收、该出就出且撑满",
               _log_has_hbar)
 
+        def _action_bar_never_cut():
+            """操作栏（开始构建 / 打开产物目录 / 停止）必须永远留在窗口内。
+
+            用户报（2026-09-15）："下面按钮没显示，但是没有滚动条。"
+            实测改前 `y=0 h=1 ismapped=0` —— 整条被 unmap：pack 按调用顺序分空间，
+            日志区（expand）先 pack、操作栏最后 pack，窗口一矮操作栏就分不到。
+            判据：把窗口调到**默认尺寸**与**最小尺寸**（minsize），操作栏都必须
+            ① mapped ② 有真实高度 ③ 下沿不超出窗口。日志区同时必须还在（它才是该缩的）。
+            """
+            import toolkit_theme as _th2
+            app.root.deiconify()
+            try:
+                for h in (_th2.px(680), _th2.px(560)):
+                    app.root.geometry("%dx%d" % (_th2.px(980), h))
+                    app.root.update_idletasks()
+                    app.root.update()
+                    bar = app.btn_build.master
+                    assert bar.winfo_ismapped(), "窗口高 %d 时操作栏被 unmap" % h
+                    assert bar.winfo_height() > 1, \
+                        "窗口高 %d 时操作栏只有 %dpx" % (h, bar.winfo_height())
+                    assert bar.winfo_y() + bar.winfo_height() <= app.root.winfo_height() + 1, \
+                        "窗口高 %d 时操作栏被切在窗口外：y=%d h=%d 窗口=%d" % (
+                            h, bar.winfo_y(), bar.winfo_height(), app.root.winfo_height())
+                    assert app.log.winfo_height() > _th2.px(60), \
+                        "操作栏回来了，日志区却被压没了：%d" % app.log.winfo_height()
+                # 三个按钮真的都在操作栏里（不是空框）
+                for btn in (app.btn_build, app.btn_open, app.btn_stop):
+                    assert btn.winfo_ismapped() and btn.winfo_height() > 1, \
+                        "按钮没显示：%r" % (btn.cget("text"),)
+            finally:
+                app.root.withdraw()
+        check("GUI：操作栏（开始构建…）在最小窗口下也不被切", _action_bar_never_cut)
+
         # 上面几条把标记切成了"手动"；后面还有预览/解析用例，先还原成"打开构建器
         # 时的样子"（自动模式 + 已保存值），免得几条用例互相影响。
         app.var_marker_manual = False
