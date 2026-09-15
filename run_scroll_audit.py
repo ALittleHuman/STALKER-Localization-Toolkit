@@ -27,6 +27,27 @@
 **每个页面都先 `nb.select()` 选上再量** —— 没选中的标签页根本没在布局里，
 量它只会得到 1x1 的假数据。
 
+★ **反向不变量（2026-09-15 补：为什么旧版审计查不出来）**：
+旧版只有**单向**判据 —— "内容显示不完全 ⇒ 必须有条" + "装得下 ⇒ 条必须收起"，
+从没查过反向的"**没有可滚内容 ⇒ 绝不许能滚**"；更糟的是"面板用法核对"把
+`fit="content"` **当成契约钉死**，于是 fs 面板那个 `fit="content"`（树的最小请求高
+把内容自然高顶到视口之上 → 明明没内容也能滚）在审计眼里是"合规"，我去改它反而会被
+审计报红。所以那份审计**结构上不可能**抓到这个缺陷，还会替它站岗。
+判据来自用户原话："没有出现滚动条的时候应当能被滚动吗？"
+
+拆成两条**都真的能红**的锁，各放在能复现机制的地方：
+
+  * **契约级**（本脚本 `audit_all_panels`）：页面里**所有** `ScrollPanel` —— body 里
+    自带滚动条（弹性内容）就必须 `fit="viewport"`，否则必须 `fit="content"`。
+    不点名、不按 app 硬编码；注入"弹性树的面板退回 fit=content"能把它弄红。
+  * **行为级**（`run_app_probe`，本脚本不做）：真建一个**矮窗口**里的 `FSToolApp`，
+    断言面板 `yview() == (0.0, 1.0)`、`try_scroll()` 不吃事件、强行 `yview_scroll` 也不动。
+    ★ 为什么不放在这里：本脚本是 Hub 式布局 —— 页面视口 `fit="content"` + `minsize_y`
+    让每个 App 恒定拿到自己的**自然高度**，面板永远压不矮。实测（窗口压到 900x320）
+    fs 面板仍有 **396px** 高、`yview=(0.0, 1.0)` —— 在这里写行为判据**永远不可能红**
+    （死锁比没锁更糟）。能复现那个机制的是"裸 Toplevel + 矮窗口"（视口 63px < 树
+    最小请求高 180px），那里注入后实测 `yview=(0.0, 0.4038)`。
+
 用法：python run_scroll_audit.py     退出码 0 = 全过
 """
 import os
@@ -243,23 +264,64 @@ SIZES = [(1500, 1000), (1280, 860), (1100, 700), (1024, 700),
          (900, 620), (800, 520), (700, 460), (640, 400)]
 
 
-def _has_tree(app, panel):
-    """面板 body 里（任意深度）有没有这个 app 自己的 `CanvasTree` 控件 —— 即"弹性内容"。
+def walk_widgets(w):
+    for ch in w.winfo_children():
+        yield ch
+        yield from walk_widgets(ch)
 
-    ★ `CanvasTree` 是**包装对象**（`CanvasTree(...)` 返回的不是控件，`.get()` 才是），
-    所以不能靠 `isinstance(子控件, CanvasTree)` 判 —— 得先把这个 app 里所有树的控件
-    收出来，再看它们在不在面板的子树里。
+
+def _body_self_scrolls(panel):
+    """面板 body 里有没有**自己的**滚动条。
+
+    有 = 里装的东西自己会滚（弹性内容，如 `CanvasTree`）→ 面板自己不该再滚。
+    这是 app 无关的结构判据：面板自己的两条条子挂在 `ScrollViewport` 上，**不在**
+    `panel.body` 里，所以 body 子树里出现 `AutoScrollbar` 只可能是内容自带的。
+    （★ 别用 `isinstance(子控件, CanvasTree)` 判：`CanvasTree(...)` 返回的是**包装
+    对象**，进控件树的只有 `CanvasTree.get()` 那个 frame，这样判永远 False。）
     """
-    trees = [v.get() for v in vars(app).values() if isinstance(v, W.CanvasTree)]
-    if not trees:
-        return False
+    return any(isinstance(w, W.AutoScrollbar) for w in walk_widgets(panel.body))
 
-    def walk(w):
-        for ch in w.winfo_children():
-            yield ch
-            yield from walk(ch)
 
-    return any(ch in trees for ch in walk(panel.body))
+def walk_panels(w, out=None):
+    if out is None:
+        out = []
+    try:
+        if isinstance(w, W.ScrollPanel):
+            out.append(w)
+        for c in w.winfo_children():
+            walk_panels(c, out)
+    except Exception:
+        pass
+    return out
+
+
+def audit_all_panels(host, tag):
+    """**类级契约**：`host` 子树里所有 `ScrollPanel`，`fit` 必须与里装的东西一致。
+
+    body 里自带滚动条（弹性内容）→ 必须 `fit="viewport"`：面板自己不滚，
+    "行多了怎么办"交给内容自己的条子（用户判据："没有出现滚动条的时候不该能滚"）。
+    静态内容 → 必须 `fit="content"`，由面板自己滚。
+
+    不点名、不按 app 硬编码 —— 任何页面、任何面板都查。返回本页查到的面板数与失败数。
+    """
+    n = 0
+    bad = 0
+    for panel in walk_panels(host):
+        view = panel.view
+        if not isinstance(view, W.ScrollViewport):
+            continue
+        elastic = _body_self_scrolls(panel)
+        want = "viewport" if elastic else "content"
+        n += 1
+        if view._fit != want or not view._horizontal:
+            bad += 1
+            FAILS.append("面板用法核对（全页面）%s：%s 的 body 里%s自带滚动条，"
+                         "视口却是 horizontal=%r / fit=%r —— 应为 horizontal=True / "
+                         "fit=%r"
+                         % (tag, panel, "" if elastic else "没",
+                            getattr(view, "_horizontal", None),
+                            getattr(view, "_fit", None), want))
+    return n, bad
 
 
 def audit_panel_wiring(app):
@@ -295,7 +357,7 @@ def audit_panel_wiring(app):
         if panel not in panes:
             FAILS.append("面板用法核对：%s 不是窗格的直接成员（被又套了一层？）" % name)
         view = panel.view
-        elastic = _has_tree(app, panel)
+        elastic = _body_self_scrolls(panel)
         want_fit = "viewport" if elastic else "content"
         ok_view = (isinstance(view, W.ScrollViewport) and view._horizontal
                    and view._fit == want_fit)
@@ -332,12 +394,24 @@ def main():
 
     total_bad = 0
     skipped = 0
+    n_panels = 0
+    bad_panels = 0
     print("=" * 112)
     print("真页面滚动条审计（判定用 Tk 自己的 xview/yview；每页都先 select 再量）")
     print("=" * 112)
 
     print("\n面板用法核对（ScrollPanel 直接当窗格 + minsize 由内容自己说）：")
     audit_panel_wiring(pages[0][3])
+
+    # ★ 类级契约：**所有**页面里**所有**面板，fit 必须与"body 里有没有自带滚动条"一致
+    print("\n面板用法核对（全页面，类级契约：弹性内容 ⇒ fit=viewport）：")
+    for idx, (label, tab, page_view, app) in enumerate(pages):
+        nb.select(idx)
+        pump(root, 6)
+        n, b = audit_all_panels(page_view, "页%d %s" % (idx, label))
+        n_panels += n
+        bad_panels += b
+        print("    页%d %-8s 面板 %d 个，违约 %d 个" % (idx, label, n, b))
 
     for idx, (label, tab, page_view, app) in enumerate(pages):
         nb.select(idx)
@@ -389,6 +463,8 @@ def main():
     print("\n" + "=" * 112)
     print("内容显示不完全却看不到滚动条的计数：%d（必须为 0）｜ 跳过（画布无尺寸）：%d"
           % (total_bad, skipped))
+    print("面板用法核对（全页面）：查了 %d 个面板，违约 %d 个（必须为 0）"
+          % (n_panels, bad_panels))
     if FAILS:
         print("失败断言 %d 条：" % len(FAILS))
         for f in FAILS[:40]:
@@ -396,14 +472,15 @@ def main():
         if len(FAILS) > 40:
             print("  … 其余 %d 条省略" % (len(FAILS) - 40))
     else:
-        print("全部断言通过：该出现的真的出现（有尺寸、ismapped=1、不盖内容），该收起的真的收起。")
+        print("全部断言通过：该出现的真的出现（有尺寸、ismapped=1、不盖内容），该收起的真的收起，"
+              "弹性内容的面板自己都不滚。")
     print("=" * 112)
 
     try:
         root.destroy()
     except Exception:
         pass
-    return 0 if (total_bad == 0 and not FAILS) else 1
+    return 0 if (total_bad == 0 and bad_panels == 0 and not FAILS) else 1
 
 
 if __name__ == "__main__":

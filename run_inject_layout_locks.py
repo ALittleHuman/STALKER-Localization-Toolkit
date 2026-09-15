@@ -251,7 +251,8 @@ INJECTIONS = [
      "弹性树的面板退回 fit=content（1 行也能上下滚）",
      'panel = ScrollPanel(pan, "数据包列表（.db / .sq）", fit="viewport")',
      'panel = ScrollPanel(pan, "数据包列表（.db / .sq）")',
-     ("fs：弹性树的面板在没有可滚内容时", "面板用法核对：db_panel")),
+     ("fs：弹性树的面板在没有可滚内容时", "面板用法核对：db_panel",
+      "面板用法核对（全页面）")),
 ]
 
 
