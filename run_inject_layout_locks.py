@@ -43,8 +43,9 @@ FPA = os.path.join(BASE, "apps", "font_pack_app.py")
 BG = os.path.join(BASE, "build_gui.py")
 TW = os.path.join(BASE, "toolkit_widgets.py")
 XCA = os.path.join(BASE, "apps", "xml_compare_app.py")
+FSA = os.path.join(BASE, "apps", "fs_app.py")
 SF = os.path.join(BASE, "file_system", "stalker_fs.py")
-TARGETS = (QT, QTH, PLUG, FPK, FPA, BG, TW, XCA, SF)
+TARGETS = (QT, QTH, PLUG, FPK, FPA, BG, TW, XCA, SF, FSA)
 
 L_OK = "真实插件面板在 Qt 后端建出来了（panel/ok，而不是 skip）"
 L_SRC = "engine_utf8_patch 里已无 Tk 构造/对话框（迁移真的落到 api.ui）"
@@ -242,6 +243,15 @@ INJECTIONS = [
      '        bar = ttk.Frame(self.root)\n'
      '        bar.pack(side="bottom", fill="x", padx=14, pady=(0, 12))',
      "GUI：操作栏（开始构建…）在最小窗口下也不被切"),
+    # ㉞ 面板"不该滚的时候也滚"（2026-09-15 用户原话）：
+    #     把弹性内容的面板退回默认 fit="content" → 1 行的列表也能上下滚 → 锁变红。
+    #     ★ 这条规则有**两份**锁（行为锁在 run_app_probe，用法核对在 run_scroll_audit），
+    #       两个探针都要抓到才算数。
+    (FSA, ("run_app_probe.py", "run_scroll_audit.py"),
+     "弹性树的面板退回 fit=content（1 行也能上下滚）",
+     'panel = ScrollPanel(pan, "数据包列表（.db / .sq）", fit="viewport")',
+     'panel = ScrollPanel(pan, "数据包列表（.db / .sq）")',
+     ("fs：弹性树的面板在没有可滚内容时", "面板用法核对：db_panel")),
 ]
 
 
@@ -305,24 +315,28 @@ def main():
                 io.open(target, "wb").write(orig[target])
                 continue
             print("\n=== 注入(%s): %s ===" % (os.path.basename(target), name))
-            p = subprocess.run([PY, probe], cwd=BASE,
-                               capture_output=True, text=True, encoding="utf-8",
-                               errors="replace", timeout=1800)
-            out = (p.stdout or "") + (p.stderr or "")
-            fails = [ln.strip() for ln in out.splitlines() if ln.strip().startswith("FAIL")]
-            tail = [ln for ln in out.splitlines() if ln.startswith("PASS ") and " FAIL " in ln]
-            print("    探针 %s exit=%d  %s"
-                  % (probe, p.returncode, tail[-1] if tail else "(无汇总)"))
-            for ln in fails:
-                print("    " + ln)
-            exprs = expect if isinstance(expect, (tuple, list)) else (expect,)
-            hit = any(e in ln for ln in fails for e in exprs)
-            print("    %s 目标锁变红: %s" % ("[OK]" if hit else "[!!]", " | ".join(exprs)))
-            if not hit:
-                bad += 1
-            if p.returncode == 0:
-                print("    [!!] 注入后探针仍然全绿 —— 锁没抓住这个错")
-                bad += 1
+            # 一条注入可以让**多个**探针各跑一遍（例如"弹性树的面板退回 fit=content"
+            # 同时钉在 run_app_probe 的行为锁与 run_scroll_audit 的用法核对上）：
+            # 每个探针都要抓到才算这条注入成立。
+            for probe in (probe if isinstance(probe, (tuple, list)) else (probe,)):
+                p = subprocess.run([PY, probe], cwd=BASE,
+                                   capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace", timeout=1800)
+                out = (p.stdout or "") + (p.stderr or "")
+                fails = [ln.strip() for ln in out.splitlines() if ln.strip().startswith("FAIL")]
+                tail = [ln for ln in out.splitlines() if ln.startswith("PASS ") and " FAIL " in ln]
+                print("    探针 %s exit=%d  %s"
+                      % (probe, p.returncode, tail[-1] if tail else "(无汇总)"))
+                for ln in fails:
+                    print("    " + ln)
+                exprs = expect if isinstance(expect, (tuple, list)) else (expect,)
+                hit = any(e in ln for ln in fails for e in exprs)
+                print("    %s 目标锁变红: %s" % ("[OK]" if hit else "[!!]", " | ".join(exprs)))
+                if not hit:
+                    bad += 1
+                if p.returncode == 0:
+                    print("    [!!] 注入后探针仍然全绿 —— 锁没抓住这个错")
+                    bad += 1
             io.open(target, "wb").write(orig[target])
             now = sha(io.open(target, "rb").read())
             print("    还原 %s" % ("一致" if now == orig_sha[target] else "不一致!!"))

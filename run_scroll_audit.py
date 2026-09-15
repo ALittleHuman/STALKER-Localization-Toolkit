@@ -243,6 +243,25 @@ SIZES = [(1500, 1000), (1280, 860), (1100, 700), (1024, 700),
          (900, 620), (800, 520), (700, 460), (640, 400)]
 
 
+def _has_tree(app, panel):
+    """面板 body 里（任意深度）有没有这个 app 自己的 `CanvasTree` 控件 —— 即"弹性内容"。
+
+    ★ `CanvasTree` 是**包装对象**（`CanvasTree(...)` 返回的不是控件，`.get()` 才是），
+    所以不能靠 `isinstance(子控件, CanvasTree)` 判 —— 得先把这个 app 里所有树的控件
+    收出来，再看它们在不在面板的子树里。
+    """
+    trees = [v.get() for v in vars(app).values() if isinstance(v, W.CanvasTree)]
+    if not trees:
+        return False
+
+    def walk(w):
+        for ch in w.winfo_children():
+            yield ch
+            yield from walk(ch)
+
+    return any(ch in trees for ch in walk(panel.body))
+
+
 def audit_panel_wiring(app):
     """核对 `ScrollPanel` 与 fs_app 两面板"**直接当窗格**"的用法与实现是否一致。
 
@@ -252,8 +271,12 @@ def audit_panel_wiring(app):
     **当契约来测**的是结构与语义（这些一旦被改回去就会重现用户踩过的坑）：
       * 面板真的是 `ScrollPanel`，而且**直接**是窗格 —— 不是被 `add_clipped` 又套了
         一层（那层裁剪会把面板底部切掉，而横向滚动条恰好就在那儿：用户实测过的坑）；
-      * 面板的内部视口是 `horizontal=True` + `fit="content"` —— 横向开关决定
-        "宽了会不会出横条"，`fit="content"` 决定"内容保持自然高度、装不下才滚"。
+      * 面板的内部视口是 `horizontal=True` —— 横向开关决定"宽了会不会出横条"；
+      * **`fit` 必须与里装的东西一致**：面板 body 里若有自带滚动条的 `CanvasTree`
+        （弹性内容，纵向跟着视口走），就必须 `fit="viewport"` —— 否则树的最小请求高
+        会把"内容自然高"顶到视口之上，**只有 1 行的列表也能上下拖**（用户 2026-09-15
+        的原话："不是竖条的问题，是不该滚动的时候也滚"）；反之（静态内容）用
+        `fit="content"`，让面板自己滚。
 
     **只打印、不判定**的是 `set_minsize` 的实际落值：实测它当前恒为 `1`
     （构造期 `ScrollPanel.min_height()` 读到的是容器的**陈旧请求尺寸** 1，
@@ -272,20 +295,26 @@ def audit_panel_wiring(app):
         if panel not in panes:
             FAILS.append("面板用法核对：%s 不是窗格的直接成员（被又套了一层？）" % name)
         view = panel.view
+        elastic = _has_tree(app, panel)
+        want_fit = "viewport" if elastic else "content"
         ok_view = (isinstance(view, W.ScrollViewport) and view._horizontal
-                   and view._fit == "content")
+                   and view._fit == want_fit)
         if not ok_view:
-            FAILS.append("面板用法核对：%s 的内部视口不是 horizontal=True/fit=content（%r/%r）"
-                         % (name, getattr(view, "_horizontal", None),
-                            getattr(view, "_fit", None)))
+            FAILS.append("面板用法核对：%s 的内部视口不是 horizontal=True/fit=%s（%r/%r）"
+                         "（里装的是%s内容 → %s）"
+                         % (name, want_fit, getattr(view, "_horizontal", None),
+                            getattr(view, "_fit", None),
+                            "弹性" if elastic else "静态",
+                            "弹性内容不许面板自己滚" if elastic
+                            else "静态内容由面板滚"))
         stored = pan._mins.get(panel)
         need = min(panel.min_height(), px(200))
         note = "" if stored == need else "  ← 注意：与内容自己说的不一致（见函数文档）"
-        print("    面板 %-10s ScrollPanel=%s 是窗格成员=%s 视口=%s/%s "
+        print("    面板 %-10s ScrollPanel=%s 是窗格成员=%s 视口=%s/%s 自带滚动条=%s "
               "窗格 minsize=%r（内容自己说 %r）%s"
               % (name, isinstance(panel, W.ScrollPanel), panel in panes,
                  getattr(view, "_horizontal", None), getattr(view, "_fit", None),
-                 stored, need, note))
+                 elastic, stored, need, note))
 
 
 def dead_rect(state):

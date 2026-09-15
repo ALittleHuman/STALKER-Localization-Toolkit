@@ -238,7 +238,8 @@ class FSToolApp:
         # 面板**直接当窗格**（不再套 add_clipped：那层裁剪会把面板底部切掉，
         # 而横向滚动条恰好就在面板底部 —— 用户实测"按钮被遮住却没有滚动条"）。
         # 面板自带横/纵滚动条（智能隐藏，出现条件 = 有东西显示不完全）。
-        panel = ScrollPanel(pan, "数据包列表（.db / .sq）")
+        # ★ `fit="viewport"`：见 _build_file_panel 的说明（弹性内容纵向不滚）。
+        panel = ScrollPanel(pan, "数据包列表（.db / .sq）", fit="viewport")
         pan.add(panel, weight=1)
         left = panel.body
         self.db_panel = panel
@@ -321,7 +322,12 @@ class FSToolApp:
 
     def _build_file_panel(self, pan):
         # 同上：面板直接当窗格（不套裁剪层），自带智能隐藏的横/纵滚动条。
-        panel = ScrollPanel(pan, "包内文件")
+        # ★ `fit="viewport"`（2026-09-15 修，用户："不该滚动的时候也滚"）：
+        #   面板里装的是**弹性**的树 —— 纵向跟着视口走（内容不溢出 → 根本没得滚），
+        #   行多了由树自己的竖条负责。用默认的 `fit="content"` 时，树的最小请求高
+        #   会把"内容自然高"顶到视口之上 → 只有 1 行的列表也能上下拖（那一行还会被
+        #   拖到面板底部、上面空一片）。横向仍按内容自然宽（工具条装不下就出横条）。
+        panel = ScrollPanel(pan, "包内文件", fit="viewport")
         pan.add(panel, weight=2)
         right = panel.body
         self.file_panel = panel

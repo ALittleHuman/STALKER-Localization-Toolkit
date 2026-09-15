@@ -627,6 +627,78 @@ def main():
                 assert str(ct.canvas.cget("xscrollcommand")), \
                     "%s 的 xscrollcommand 没接上" % name
         check("fs：三棵树都有横向滚动条（长路径的尾巴能看到）", fs_trees_have_hbar)
+
+        def fs_panel_does_not_scroll_for_elastic_tree():
+            """面板里的树是**弹性**的：装得下的时候，面板**不许能滚**。
+
+            用户口径（2026-09-15，原话）："不是竖条的问题，**是不该滚动的时候也滚**。"
+            —— 复现：DB 列表只有 1 行，鼠标在面板上滚滚轮，那一行会**被拖到面板底部**、
+            上面留一大片空白（视频里 9 秒全程如此）。
+            根因：`ScrollPanel` 默认 `fit="content"`（内容按自然高、装不下就滚），
+            而树的最小请求高（px(120)=180px）把"内容自然高"顶到视口之上 ——
+            哪怕树里只有 1 行。面板里装的是弹性内容，纵向就该**跟视口**（fit="viewport"）。
+            判据（矮窗口 + 只有 1 行）：
+              ① 面板视口 `yview() == (0.0, 1.0)` —— 竖向根本没有可滚内容；
+              ② 面板 `try_scroll(滚轮事件)` **不消费**（返回假值）；
+              ③ 真发一次滚轮事件后 `yview()` 不变（"不该滚的时候不滚"的落地判据）；
+              ④ 只有 1 行时树自己的竖条也不出现；第一行贴在画布**顶部**。
+            """
+            import toolkit_theme as _th3
+            import toolkit_widgets as _tw3
+            # ★ 夹具放**独立 Toplevel**（第二个 FSToolApp 实例），绝不动共享根窗口：
+            #   根窗口里已经堆了六个 App 的页面，给它 deiconify+设尺寸会**永久**改变
+            #   后续用例（id 画布滚轮锁）看到的布局 —— 2026-09-15 实测踩到。
+            win = tk.Toplevel(_ROOT)
+            try:
+                win.geometry("%dx%d" % (_th3.px(1100), _th3.px(430)))   # 矮窗口
+                app2 = FSToolApp(win)
+                win.update_idletasks(); win.update()
+                app2.db_files = ["Z:/fake.sq_base"]
+                app2._refresh_db_list()
+                # ★ 布局要**跑到位**再看：`ScrollPanel` 还有 `after(600)` 的对齐回调，
+                #   不等就量到中间态（那一版偶发地把"面板竖条冒出来"当成缺陷）。
+                for _ in range(14):
+                    win.update_idletasks(); win.update()
+                    try:
+                        app2.db_panel._fit_request()
+                    except Exception:
+                        pass
+                    time.sleep(0.05)
+                panel, tree = app2.db_panel, app2.db_ctree
+                assert len(tree.rows) == 1, "DB 列表行数应为 1，实际 %d" % len(tree.rows)
+                yv = tuple(round(v, 4) for v in panel.view.canvas.yview())
+                assert yv == (0.0, 1.0), (
+                    "面板竖向还有可滚内容（不该滚的时候能滚）：yview=%r —— "
+                    "面板 body req %d / 视口 %d" % (yv, panel.body.winfo_reqheight(),
+                                                    panel.view.canvas.winfo_height()))
+                ev = type("E", (), {"delta": -120, "time": 123456, "widget": panel.view.canvas})()
+                got = panel.view.try_scroll(ev)
+                assert not got, "面板不该消费滚轮（没有可滚内容）：%r" % (got,)
+                before = tuple(panel.view.canvas.yview())
+                panel.view.canvas.yview_scroll(1, "units")     # 强行滚一下也不该动
+                win.update_idletasks()
+                assert tuple(panel.view.canvas.yview()) == before, \
+                    "面板被滚动了：%r → %r" % (before, tuple(panel.view.canvas.yview()))
+                # ④ 树自己的竖条：**装得下**才要求它不出现（夹具故意很矮，画布可能连
+                #    一行都放不下 —— 那时树自己滚是**对**的，与"面板不该滚"是两件事）。
+                if tree.canvas.winfo_height() >= tree.ROW_H + 2:
+                    assert not (tree.vbar.winfo_manager() and tree.vbar.winfo_width() > 1), \
+                        "画布装得下一行，树自己的竖条不该出现（画布高 %d / 行高 %d）" % (
+                            tree.canvas.winfo_height(), tree.ROW_H)
+                items = tree.canvas.find_all()
+                assert items, "树上没有画任何东西"
+                y0 = min(tree.canvas.bbox(it)[1] for it in items if tree.canvas.bbox(it))
+                assert y0 < tree.canvas.winfo_height() // 2, \
+                    "第一行跑到画布下半部了（上面空一大片）：y=%d / 画布高=%d" % (
+                        y0, tree.canvas.winfo_height())
+                assert _tw3 is not None
+            finally:
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+        check("fs：弹性树的面板在没有可滚内容时**不许滚**（单行贴顶部）",
+              fs_panel_does_not_scroll_for_elastic_tree)
     else:
         print("  SKIP fs（构造失败）")
 

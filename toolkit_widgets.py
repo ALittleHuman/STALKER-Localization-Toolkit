@@ -778,13 +778,16 @@ class ScrollPanel(ttk.LabelFrame):
         except Exception:
             pass
 
-    def __init__(self, parent, title="", padding=6, **kw):
+    def __init__(self, parent, title="", padding=6, fit="content", **kw):
         super().__init__(parent, text=title, padding=padding, **kw)
-        # **必须 fit="content"**：默认的 "viewport" 会把内容高度强行压成视口高度，
+        # **默认必须 fit="content"**：默认的 "viewport" 会把内容高度强行压成视口高度，
         # 于是"内容比视口高"这件事永远不成立 —— 纵向滚动条一辈子不出现，
         # 被裁掉的内容谁也够不着（这就是"实现了没"那一问的答案：没实现）。
         # fit="content" 让内容保持自己的自然高度（req），装不下时 vbar 才真的出现。
-        self.view = ScrollViewport(self, horizontal=True, fit="content")
+        # ★ 但**内容本身是弹性的**（例如面板里放一棵树）时，正确选择是 fit="viewport"：
+        #   纵向跟视口走 → 根本没得滚（用户 2026-09-15："不该滚动的时候也滚"），
+        #   弹性的树自己去滚行。调用方按内容性质选。
+        self.view = ScrollViewport(self, horizontal=True, fit=fit)
         self.view.pack(fill="both", expand=True)
         self.body = self.view.content          # 调用方往这里建控件
         # 内容建完之后（页面构建阶段结束）**一次性**把请求高度对齐到内容，
