@@ -645,6 +645,73 @@ def main():
         check("xml._refresh_tree (纯 stats 行)", stats_rows_ui_says_stats)
         check("xml._on_mode_change", x._on_mode_change)
 
+        def id_box_wheel_follows_unified_rules():
+            """id 差异画布的滚轮必须与全局规则一致（用户口径 2026-09-13/14）。
+
+            > "一次只有一个滚动条能动。""隐藏的滚动条，代码里不算滚动条。"
+
+            老实现是无条件 `yview_scroll` + 无条件 `"break"`：id 列表只有几行
+            （滚动条被隐藏）时，滚轮被它吃掉、**外层页面反而滚不动** —— 与
+            `CanvasTree._on_wheel` / `ScrollViewport.try_scroll` 那条规则不一致。
+            判据 = **真调那个绑定下去的回调**，三种情形逐条断言：
+              ① 装得下 → 返回 None（冒泡给外层）且 yview 不动；
+              ② 装不下 → 返回 "break" 且 yview 真的动了；
+              ③ 同一次事件已被别人声明独占（`wheel_claim` 先跑）→ 撤销自己的滚动、
+                 仍然 "break"（不让同一次滚轮动两个滚动条）。
+            """
+            import types
+            import toolkit_widgets as _W
+            # 绑定下去的必须是**这个方法**（不是内联 lambda），否则统一规则没法复用
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "apps", "xml_compare_app.py"),
+                      encoding="utf-8") as _fh:
+                src = _fh.read()
+            assert 'cv.bind("<MouseWheel>", self._id_wheel)' in src, \
+                "id 画布的滚轮没走 _id_wheel（又变回内联 lambda？）"
+
+            holder = tk.Frame(_ROOT)
+            try:
+                holder.pack(fill="both", expand=True)
+                box = x._build_id_list(holder, [("仅 A", "id%d" % i) for i in range(3)],
+                                       height=200)
+                _ROOT.update_idletasks(); _ROOT.update()
+                cv = x._id_canvas
+                assert box is not None and cv is not None, "id 列表没建出来"
+
+                def wheel(delta, stamp):
+                    return x._id_wheel(types.SimpleNamespace(delta=delta, time=stamp,
+                                                             widget=cv))
+                # ① 装得下：不吃事件
+                r1 = wheel(-120, 111)
+                assert r1 is None, "装得下时不该吃滚轮（应返回 None 冒泡），实际 %r" % (r1,)
+                # ② 装不下：真滚 + break
+                box2 = x._build_id_list(holder, [("仅 A", "id%d" % i) for i in range(200)],
+                                        height=120)
+                _ROOT.update_idletasks(); _ROOT.update()
+                cv = x._id_canvas
+                before = cv.yview()
+                r2 = wheel(-120, 222)
+                after = cv.yview()
+                assert r2 == "break", "真的滚动了就该吃掉事件，实际 %r" % (r2,)
+                assert after != before, "返回 break 却没真的滚动：%r → %r" % (before, after)
+                # ③ 独占：同一次事件（time 相同）已被别人声明 → 撤销自己的滚动
+                _W._WHEEL_CLAIM[0] = 333
+                before3 = cv.yview()
+                r3 = wheel(-120, 333)
+                assert r3 == "break", "被别人声明后仍要吃掉这次事件，实际 %r" % (r3,)
+                assert cv.yview() == before3, \
+                    "同一次滚轮已被别人声明，这里必须撤销自己的滚动：%r → %r" % (
+                        before3, cv.yview())
+                assert box2 is not None
+            finally:
+                _W._WHEEL_CLAIM[0] = None
+                try:
+                    holder.destroy()
+                except Exception:
+                    pass
+        check("滚轮：id 差异画布与全局规则一致（能滚才吃 + 独占声明）",
+              id_box_wheel_follows_unified_rules)
+
         # 切换比较模式会**重建 Treeview**（列集合随模式变）。重建后必须重新
         # grid、重新绑事件、重新设滚动钩子与行着色 tag —— 曾漏掉这一步，于是
         # 用户切一次模式，表格区就变空、滚动条失效、双击详情与选中明细全废，
@@ -834,6 +901,74 @@ def _check_hidpi_and_titlebar():
         finally:
             ct.frame.destroy()
     check("HiDPI：CanvasTree 行高容得下正文（不再裁字）", row_fits_font)
+
+    def tree_row_items_aligned_to_checkbox():
+        """行内三角/文件名必须与**勾选框**对齐（用户口径 2026-09-14）。
+
+        > "这里图片上能看到勾选框和三角、文字是错位的，统一以勾选框为准。"
+
+        现象（150% 屏实测，改前）：三角写死在 `(x-12, y+12)`、文件名写死在 `y+12`，
+        而勾选框中心在 17.5 → 两者都高 5.5px；三角 bbox.x=-4，**左半边被画到画布外**。
+        判据：真建树 + 真 populate + 读**画布图元的真实 bbox**（不是查源码）：
+          ① 三角中心 == 勾选框中心（±1px，Tk 的 bbox 取整会差 0.5）；
+          ② 文件名中心 == 勾选框中心（±1px）；
+          ③ 三角**整条在画布内**（bbox.x ≥ 0）且不与勾选框重叠（右边界 < 勾选框左边界）。
+        """
+        import toolkit_widgets as _W
+
+        class _N:
+            def __init__(self, name, is_dir=False, path=""):
+                self.name, self.is_dir, self.path = name, is_dir, path
+                self.size, self.children, self.checked = 10, {}, False
+
+            def dir_state(self):
+                return None
+
+        host = tk.Frame(_ROOT)
+        ct = _W.CanvasTree(host, with_chk=True)
+        try:
+            host.pack(fill="both", expand=True)
+            root = _N("textures", True, "textures")
+            for nm in ("aaz", "act", "bmp"):
+                root.children[nm] = _N(nm, False, "textures/" + nm)
+            ct.set_root(root)
+            ct._expanded.add(root)
+            ct.populate()
+            ct.canvas.configure(width=420, height=ct.ROW_H * 4)
+            _ROOT.update_idletasks()
+            _ROOT.update()
+            c = ct.canvas
+            bad = []
+            for row in range(len(ct.rows)):
+                y0 = row * ct.ROW_H
+                band = [it for it in c.find_all() if c.bbox(it)
+                        and c.bbox(it)[1] >= y0 - 6 and c.bbox(it)[3] <= y0 + ct.ROW_H + 6]
+                box = next((c.bbox(it) for it in band
+                            if c.type(it) == "rectangle"
+                            and c.bbox(it)[2] - c.bbox(it)[0] >= ct.CHK - 2), None)
+                if box is None:
+                    continue
+                box_cy = (box[1] + box[3]) / 2.0
+                arrow = next((c.bbox(it) for it in band if c.type(it) == "polygon"), None)
+                node = ct.rows[row][0]
+                name_txt = next((c.bbox(it) for it in band if c.type(it) == "text"
+                                 and c.itemcget(it, "text") == node.name), None)
+                if arrow is not None:
+                    if abs((arrow[1] + arrow[3]) / 2.0 - box_cy) > 1:
+                        bad.append(("三角中心", row, arrow, box_cy))
+                    if arrow[0] < 0 or arrow[2] > box[0]:
+                        bad.append(("三角越界/压勾选框", row, arrow, box))
+                if name_txt is not None:
+                    if abs((name_txt[1] + name_txt[3]) / 2.0 - box_cy) > 1:
+                        bad.append(("文件名中心", row, name_txt, box_cy))
+            assert not bad, "树行内元素与勾选框错位（行/实测/期望）：%r" % (bad[:4],)
+        finally:
+            try:
+                host.destroy()
+            except Exception:
+                pass
+    check("HiDPI：树行内三角/文件名与勾选框对齐（三角整条在画布内、不压框）",
+          tree_row_items_aligned_to_checkbox)
 
     def treeview_rowheight_scaled():
         got = int(ttk.Style().lookup("Treeview", "rowheight") or 0)

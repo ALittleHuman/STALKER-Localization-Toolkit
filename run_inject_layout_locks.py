@@ -41,7 +41,10 @@ PY = sys.executable
 FPK = os.path.join(BASE, "font_pack", "font_pack.py")
 FPA = os.path.join(BASE, "apps", "font_pack_app.py")
 BG = os.path.join(BASE, "build_gui.py")
-TARGETS = (QT, QTH, PLUG, FPK, FPA, BG)
+TW = os.path.join(BASE, "toolkit_widgets.py")
+XCA = os.path.join(BASE, "apps", "xml_compare_app.py")
+SF = os.path.join(BASE, "file_system", "stalker_fs.py")
+TARGETS = (QT, QTH, PLUG, FPK, FPA, BG, TW, XCA, SF)
 
 L_OK = "真实插件面板在 Qt 后端建出来了（panel/ok，而不是 skip）"
 L_SRC = "engine_utf8_patch 里已无 Tk 构造/对话框（迁移真的落到 api.ui）"
@@ -177,6 +180,32 @@ INJECTIONS = [
      'LogBox(log_lf, height=16, wrap="none", hbar=True)',
      'LogBox(log_lf, height=16, wrap="none")',
      "GUI：构建输出（wrap=none）有横向滚动条"),
+    # ㉕㉖ 树行内对齐（2026-09-14 用户口径："勾选框和三角、文字是错位的，统一以勾选框为准"）
+    #   两条分别打"各元素各写各的 y+12"与"不给三角留槽（左半边画到画布外）"。
+    (TW, "run_app_probe.py", "三角/文字退回写死的 y+12（与勾选框错位）",
+     "\n            cy = self._row_center(i)",
+     "\n            cy = y + 12",
+     "HiDPI：树行内三角/文件名与勾选框对齐"),
+    (TW, "run_app_probe.py", "不给三角留槽（CHK_PAD 不含 ARROW_W+GAP）",
+     "        self.CHK_PAD = max(px(6), 2) + self.ARROW_W + self.ARROW_GAP",
+     "        self.CHK_PAD = max(px(6), 2)",
+     "HiDPI：树行内三角/文件名与勾选框对齐"),
+    # ㉗㉘ 滚轮统一（2026-09-14 用户问"滚动条真的都统一了吗"→ 查出 id 画布没走统一规则）
+    (XCA, "run_app_probe.py", "id 画布不再声明滚轮独占（同一次事件动两个滚动条）",
+     "        if not wheel_claim(e):",
+     "        if False:                      # 注入：不声明独占",
+     "滚轮：id 差异画布与全局规则一致"),
+    (XCA, "run_app_probe.py", "id 画布滚不动也吃事件（外层页面滚不动）",
+     "        if after == before:",
+     "        if False:                      # 注入：滚不动也吃",
+     "滚轮：id 差异画布与全局规则一致"),
+    # ㉙ 外部工具输出按平台默认编码解（2026-09-14：真实镜像上抓到 sq_meshes 整包被藏）
+    (SF, "run_functional_probe.py", "rdsquashfs 输出退回平台默认编码（非 GBK 路径整包判损坏）",
+     '        r = subprocess.run([tool, "--describe", path], capture_output=True, text=True,\n'
+     '                           encoding="utf-8", errors="replace", timeout=30,',
+     '        r = subprocess.run([tool, "--describe", path], capture_output=True, text=True,\n'
+     '                           timeout=30,',
+     ("引擎：外部工具输出显式指定 utf-8", "引擎：SquashFS 真实往返")),
 ]
 
 

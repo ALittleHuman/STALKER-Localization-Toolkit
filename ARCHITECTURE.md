@@ -849,7 +849,7 @@ ffmpeg，等于手动选择白存）。`toolkit_platform` 的 `load_app_config` 
 |---|---|
 | `run_ui_smoke.py` | 需桌面的 smoke：六工具构造 + 插件栏目 + 编码检测 + `parse_file` ID 统计 + cfgxml 解析 + ffmpeg/ffprobe 发现。**已纳入 `run_ci.py`**：`--fast` 档跳过并记入"未覆盖"清单，默认档缺桌面记 SKIP，`--release` 档缺桌面即 FAIL；退出码非 0 一律 FAIL |
 | `run_gui_text_audit.py` | 界面文案 / 标点审查（只读）：扫 `messagebox` / `tool_text` / `text=` 里的长串与标点。**没有 pass/fail 语义**，因此只进 pyflakes 名单做静态覆盖，不作为 CI 步骤（原名 `_gui_text_audit.py`：下划线前缀 + 文档/CI 全无登记，2026-09-12 改名并登记） |
-| `run_inject_layout_locks.py` | **故障注入验证器（手动跑，唯一会临时改写源文件的脚本）**：把面板迁移、主题映射、汉化包几何与简繁替换、构建器序号/滚动条的 **25** 条锁各自打回"错的写法"，跑对应探针（Qt 侧 `run_qt_pilot_probe.py` / Tk 侧 `run_ext_probe.py` / `run_qt_build_probe.py` / `run_functional_probe.py` / `run_app_probe.py` / `run_build_probe.py`）断言目标锁变红，`finally` 还原并核对 sha256。命令行可给若干"名字子串"只跑命中的几条（改一条锁时省时间；**不带参数 = 全跑**）。**故意不作为 CI 步骤**（会改真实源文件），但**在 pyflakes 静态名单里** —— 否则 `run_app_probe` 的"不许有游离 `run_*.py`"防腐锁会红。★ 注入点写多行文本时要当心**行尾**：`font_pack.py` 是 CRLF，多行锚点里的 `\n` 匹配不上（报"注入点出现 0 次"），所以那里的锚点改用"带换行的单行" |
+| `run_inject_layout_locks.py` | **故障注入验证器（手动跑，唯一会临时改写源文件的脚本）**：把面板迁移、主题映射、汉化包几何与简繁替换、构建器序号/滚动条、树行对齐与滚轮统一的 **30** 条锁各自打回"错的写法"，跑对应探针（Qt 侧 `run_qt_pilot_probe.py` / Tk 侧 `run_ext_probe.py` / `run_qt_build_probe.py` / `run_functional_probe.py` / `run_app_probe.py` / `run_build_probe.py`）断言目标锁变红，`finally` 还原并核对 sha256。命令行可给若干"名字子串"只跑命中的几条（改一条锁时省时间；**不带参数 = 全跑**）。**故意不作为 CI 步骤**（会改真实源文件），但**在 pyflakes 静态名单里** —— 否则 `run_app_probe` 的"不许有游离 `run_*.py`"防腐锁会红。★ 注入点写多行文本时要当心**行尾**：`font_pack.py` / `toolkit_widgets.py` 是 CRLF，多行锚点里的 `\n` 匹配不上（报"注入点出现 0 次"），所以那里的锚点改用"带换行的单行" |
 | `run_deadcode_audit.py` | 死代码审计（未用导入 / 未被引用函数·常量 / 空实现 / 重复实现候选）。**退出码恒为 0**——这是审计不是闸门。同样**不在 `run_ci.py` 里**。<br>**已知 / 易误报项**（2026-09-12 复核实测）：① 未用导入 **0 处**（`toolkit.py` 有了模块级 `__all__`，"导入但未使用"已不再是告警；旧文写的 ~131 已过期）；② 空实现 1 处 = `apps/fs_app.py::_db_click`（**有意为空**，作用是拦掉 `CanvasTree` 在无 `on_click` 时"点叶子就切勾选"的默认行为，见 `toolkit_widgets.py` 的点击分支，**不要为了审计好看而给它加代码**）；③ 重名 **28 组**基本都是各文件同名但语义不同的内部辅助（`main` / `check` / `_build_ui` / `work` / `apply` …），非重复实现；真正要处理的重复实现得靠人工核查（例如 2026-09-12 修掉的 `xml_compare_app.decode_file` —— 它**遮蔽**了公共层同名函数）；④ "注释代码" 2 处（`toolkit_base.py` / `font_pack_app.py`）**都是它的正则误报**（把以 `import` / `tk.` 开头的**中文说明性注释**当成了代码残骸），别去"清理"；⑤ **它看不到 `temp/`**（`SKIP_DIRS` 含 `temp`）——历史上最大的一处重构残留（旧 `fs_app` 副本 919 行）恰好藏在那里，2026-09-12 已移入 `backup/pre_modularization/` |
 | `download_ffmpeg.py` | 检测并自动下载 `ffmpeg.exe` / `ffprobe.exe` |
 | `cross_validate.py` | 与外部 `converter.exe`（cv）的**DB 双向交叉校验**，**六种格式全覆盖**（xdb / 2947ru / 2947ww / 2945 / 2215 / 11xx）× 三个方向：<br>**A** cv 封 → 工具解（工具读得懂官方产物）、**B** 工具封 → cv 解（官方认工具产物）、**C** 工具封 → 工具解（自洽）。<br>**源集合含目录条目**（`(path, b"", True)`，path **不带**尾斜杠，引擎的 build_header 自己补 `\`）—— 这是关键覆盖：旧脚本只喂文件，于是"目录条目"这条路径从未被交叉验证过，而 cv 恰恰只在处理目录条目时才崩（11xx）。<br>**内容比对是逐字节**（`first_byte_diff`，2026-09-12 由哈希口径订正：用户要求"字节级相同"，且不一致时要给出**首异下标 + 两侧字节值 + 双方长度**；哈希给不出位置）。<br>**文件名代码页**：cv 用 Win32 `GetACP()`（本机 936）而不是 `locale.getpreferredencoding()`（外部审计实测后者在别的机器上返回 utf-8 → 会把"cv 写得成的合法乱码名"预测成写不成 → **误报 FAIL**）。预测走 `MultiByteToWideChar(CP_ACP)`（不是 Python 的 `errors="ignore"`：无效前导字节在 API 里是私用区字符 U+F8F5）；判定收敛在纯函数 `classify_cv_name()`，由 `run_functional_probe` 第 [10] 段上锁。<br>**两个西里尔样本都测**：一个预测名含 `?`（Win32 非法字符 → cv 建不出文件 → SKIP 并如实归因）、一个预测名是**合法乱码名**（cv 会照写 → SKIP）。只测前者会让"预测名算错"碰巧躲过（旧实现就是这样一直没暴露）。<br>**cv 的两个封包侧规范化行为**（期望值必须照此校准，否则误报）：① **路径全部转小写**（故方向 A 忽略大小写比对；方向 B 里 cv 解工具包会保留原大小写，说明转小写是 cv 行为、不是引擎丢信息）；② **只给"直接含文件的目录"写条目**，中间层目录不写（故方向 A 不要求中间层目录条目，但要求叶子目录条目齐全）。<br>**cv 能力实测**：xdb/2947ru/2947ww 能封能解；2945/2215/11xx **不能封**（`-pack` 返回 0 但不产出文件，只看 returncode 会误判成功）；11xx 解**含目录条目**的包时栈溢出 `0xC00000FD`，故 A/B 记为 SKIP(cv 缺陷)，另用"不含目录条目的 11xx LZHUF 载荷包"覆盖 cv 侧 11xx 路径。<br>**PASS / FAIL / SKIP 严格分开、末尾给计数，只有 FAIL 才非零退出**（SKIP 一律附原因，避免假绿）。**运行目录完全隔离**：样例与输出都在 `tempfile.mkdtemp(prefix="toolkit_xval_")` 下，跑完自清，因此多个 CI 可并发，且不在仓库里落任何文件。当前实测 **PASS 18 / FAIL 0 / SKIP 6**（双文件名样本后从 16/0/4 增加） |
@@ -1501,6 +1501,40 @@ Tk 侧 `load_user_theme/save_user_theme` 读写 `user.ltx`，路径来自 `toolk
 ★ 第一次截图**抓到了被压在下面的游戏窗口** —— `CopyFromScreen` 只能拍最上层那块区域。改用 `PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT)`（按窗口自己渲染）+ `SetProcessDPIAware()` 才拍到正确窗口。这条与 §7.2 的"截图常抓错窗口"是同一个坑，换成窗口自绘就绕开了。
 
 **注入**（`run_inject_layout_locks.py` 21 → **25** 条）：切标记不同步序号 / 去掉版本号 trace / 构建输出退回只有竖条 —— 三条各自把对应锁弄红，`finally` 逐字节还原。
+
+---
+
+### 11.9 2026-09-14（同批）：树行对齐 / 滚轮统一 / 外部工具输出编码
+
+用户四问，逐条落到"查到什么 → 怎么定判据"：
+
+> "滚动条真的都统一了吗？还有，这里图片上能看到勾选框和三角、文字是错位的，统一以勾选框为准。
+>  另外，X-Ray 在读取包的时候是从前到后依次读取，那就按后面的为准，最后读散装文件，如果文件有重复
+>  就覆盖。这个工具的逻辑是这样吗？然后，目前读取速度太慢了，有优化的可能性吗（这个先别优化，等 2.0.0 再重写）？"
+
+| # | 问题 | 查到的事实 | 处置 |
+|---|---|---|---|
+| ① | 勾选框/三角/文字错位，"以勾选框为准" | 真机实测（150%、`ROW_H=36` / `CHK=21`）：三角写死在 `(x-12, y+12)`、文件名写死在 `y+12`，而勾选框中心在 **17.5** → 三角与文字都高 **5.5px**；三角 bbox.x=**-4**（左半边画到画布外）。100% 屏上两者恰好都是 12，所以只在 HiDPI 露出来 | `CanvasTree`：算一行唯一的垂直基准 `_row_center()`（= **勾选框中心**），三角/文件名/状态/大小全部用它；三角尺寸按 `CHK` 等比（`ARROW_W/H = max(px(8), CHK*9//16)`）并画进勾选框左侧**预留槽**（`CHK_PAD` 里算进 `ARROW_W+ARROW_GAP`，否则 level 0 的三角照样被裁）；勾选框本身直接按 `_chk_rect()` 画（与命中判定**同一份几何**）。实测：三角中心与勾选框差 **+0.0px**、文字 **+0.5px**（Tk bbox 取整）、三角左边界 8 ≥ 0 |
+| ② | 滚动条真的都统一了吗 | 都是 `AutoScrollbar`（`run_hub_probe` 早有"活代码里没有裸 `ttk.Scrollbar(`"锁）✓；但**漏了这一处**：`xml_compare_app` 的 id 差异画布自己 `bind("<MouseWheel>")`，**无条件 `yview_scroll` + 无条件 `break"`** —— 列表只有几行（滚动条被隐藏）时滚轮被它吃掉、**外层页面反而滚不动**，与 `CanvasTree._on_wheel` / `ScrollViewport.try_scroll` 那条规则不一致 | 抽成 `XMLCompareApp._id_wheel()`：**能滚才吃**（`yview()` 没变 → 返回 None 冒泡）+ `wheel_claim` **独占声明**（同一次事件已被别人声明 → 撤销自己的滚动）。`wheel_claim` 随之进 `toolkit.py` 的 re-export 契约（150 名） |
+| ③ | 读取顺序与覆盖：引擎是"后者为准 + 散装最后覆盖"，工具是这样吗 | **不是，差两条**：`_Node.merge()` 保留**先**加载的那份（first-wins），而加载顺序是 `sorted(basename.lower())`（`_scan_and_load`）；散装文件**根本没进合并树**（树只由 `.db`/`.sq` 归档构成）。现场证据：`gamedata.sqzy_patch` 按字典序排在 `gamedata.sq_*` **之后** → first-wins 下**永远输**，可它是 patch，引擎读到它时应当覆盖前者；`gamedata/`、`新建文件夹/`、`NLCI 汉化 9.12/` 三处散装也都不在树里 | **未改**（属行为/口径变更，牵动"解包取哪一份"与封包输入集合）：先把事实与影响摆出来，等用户拍板"改成 last-wins + 散装作为最后一层并入树" |
+| ④ | 读取太慢，有优化空间吗（先别优化） | 实测（现场安装）：**目录扫描不是瓶颈** —— 根目录 `rglob` 936 项 **0.07s**；**瓶颈是 `sqfs2tar` 那趟"为拿文件大小把整个镜像流一遍"**：`sq_levels` 2.3GB → **99.6s**、`sqzy_patch` 2.2GB → **54.4s**、`sq_sounds` 0.96GB → 10.3s（≈23–93 MB/s）；而**列路径**的 `rdsquashfs --describe` 连 7.9GB 的 `sq_textures` 也只要 **0.14s**（19641 项）。优化方向（2.0.0 再动）：直接读 SquashFS 的 superblock + inode 表取 size（元数据级，不再流整镜像），或"先只列路径、大小按需补" | **只报告不优化**（用户明确"等 2.0.0"） |
+
+**顺带修掉一个真缺陷**（答 ④ 时量出来的，属正确性、不属优化）：`sqfs_list` 的 `subprocess.run(text=True)` **没给编码** → Python 用平台默认（GBK）解 `rdsquashfs --describe` 的输出；路径含非 GBK 字节时**读取线程抛 `UnicodeDecodeError`**、`r.stdout` 变 None → `sqfs_list` 返回 None → 工具报"镜像损坏或缺 rdsquashfs"。实测 `gamedata.sq_meshes`（1.96GB）整包就是这样被藏起来的，而同一镜像显式按 utf-8 解 **0.07s 列出 4104 项**。三处调用点（`stalker_fs.sqfs_list` / `sqfs_extract` / `fs_app._diagnose_sqfs`）都补上 `encoding="utf-8", errors="replace"`。
+
+> 另记两条**只报告未改**的发现：`sqfs_pack` 收 `(rel, data, is_dir)` 却**忽略 `is_dir`**（目录条目被写成 0 字节普通文件 → tar2sqfs 报 `Not a directory` 而失败）；目前 `fs_app` 封包只塞 `is_dir=False` 的文件、所以是**潜伏**缺陷，但 API 契约是错的，且 SquashFS 封包本轮之前**没有任何探针覆盖**（现已补上往返锁）。
+
+**锁**（本轮新增）：
+
+| 锁 | 判据 |
+|---|---|
+| `run_app_probe`：树行内三角/文件名与勾选框对齐 | 真建树 + 读**画布图元 bbox**：三角中心 == 勾选框中心（±1）、文件名中心 == 勾选框中心（±1）、三角整条在画布内（`bbox.x ≥ 0`）且不压勾选框 |
+| `run_app_probe`：id 差异画布与全局滚轮规则一致 | 真调那个绑定下去的回调：装得下 → 返回 None 且 `yview` 不动；装不下 → `"break"` 且真滚了；同一次事件已被别人声明 → 撤销自己的滚动 |
+| `run_functional_probe`：SquashFS 真实往返 | **此前完全没有覆盖**（六格式往返只覆盖 DB 系列）：封包 → 列表 → 提取，路径含**中文与俄文**，名字原样、大小一致、字节一致；缺 `deps/`（外部工具，不入库）时 SKIP |
+| `run_functional_probe`：外部工具输出显式 utf-8 | AST 锁：`file_system/stalker_fs.py` 与 `apps/fs_app.py` 里任何 `text=True` 的 `subprocess.*` 都必须同时给 `encoding=`（`**dict` 形式的 kwargs 它看不见，所以那处必须写**字面关键字**） |
+
+**注入**（25 → **30** 条）：写死 `y+12` / 不给三角留槽 / 不声明滚轮独占 / 滚不动也吃 / `--describe` 退回平台默认编码 —— 各自把对应锁弄红。
+
+**真机截图**（`%TEMP%` 一次性脚本 + `PrintWindow`）：同一个 `CanvasTree` 控件在真窗口里，勾选框、三角、文件名三者同高 ✓。
 
 ---
 

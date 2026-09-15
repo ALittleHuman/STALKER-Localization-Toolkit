@@ -8,7 +8,7 @@ from apps._bootstrap import (
 from toolkit import (
     color,
     dir_row, tool_header,
-    LogBox, SplitPane, AutoScrollbar,
+    LogBox, SplitPane, AutoScrollbar, wheel_claim,
     _make_pump,
     _HAS_DND,
     errbox, log_summary, log_detail,
@@ -1095,9 +1095,10 @@ class XMLCompareApp:
             self._id_empty = tool_label(parent, "（该文件没有 id 差异）",
                                         font_role="font", fg_role="text_dim")
             cv.bind("<Configure>", lambda e: self._id_paint())
-            # 滚轮只在指针进入该画布时接管，避免抢走表格的滚轮
-            cv.bind("<MouseWheel>", lambda e: (cv.yview_scroll(
-                -1 if e.delta > 0 else 1, "units"), self._id_paint(), "break")[-1])
+            # 滚轮：**统一规则**（能滚才吃 + 独占声明）—— 见 `_id_wheel`。
+            # 原来这里是无条件 `yview_scroll` + 无条件 "break"：id 列表只有几行
+            # （滚动条被隐藏）时滚轮被它吃掉，外层页面反而滚不动，与树/视口不一致。
+            cv.bind("<MouseWheel>", self._id_wheel)
 
         cv = self._id_canvas
         self._ids = ids
@@ -1117,6 +1118,32 @@ class XMLCompareApp:
         cv.yview_moveto(0)
         self._id_paint()
         return self._id_box
+
+    def _id_wheel(self, e):
+        """id 差异画布的滚轮：与树/视口**同一条规则**（用户口径 2026-09-13/14）。
+
+        > "一次只有一个滚动条能动。""隐藏的滚动条，代码里不算滚动条。"
+
+        判据（探针真调这个回调，三种情形都断言）：
+          ① 装得下（`yview()` 不变）→ 返回 None：**不吃事件**，让它冒泡给外层视口；
+          ② 装得下 → 真的滚了 → 调 `wheel_claim` 声明独占；已被别人声明则**撤销**自己的
+             滚动（避免同一次滚轮两个滚动条一起动）；
+          ③ 任何"真的动了"的路径都返回 "break"（别再让外层重复滚一遍）。
+        """
+        cv = self._id_canvas
+        if cv is None:
+            return None
+        before = cv.yview()
+        cv.yview_scroll(-1 if e.delta > 0 else 1, "units")
+        after = cv.yview()
+        if after == before:
+            return None                      # 滚不动 → 这里没有可用的滚动条
+        if not wheel_claim(e):
+            cv.yview_moveto(before[0])       # 这次已被别人滚过 → 撤销
+            self._id_paint()
+            return "break"
+        self._id_paint()
+        return "break"
 
     def _id_paint(self):
         """只保留视口内的 id 行（虚拟化核心）。"""

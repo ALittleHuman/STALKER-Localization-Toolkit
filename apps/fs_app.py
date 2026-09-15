@@ -877,6 +877,10 @@ class FSToolApp:
             r = subprocess.run(
                 [tool, "--describe", sqfs_path],
                 capture_output=True, text=True, timeout=30,
+                # 与 stalker_fs.sqfs_list 同一条口径：**外部工具输出是 UTF-8**，
+                # 不指定编码就会用平台默认（GBK）解码，遇到非 GBK 字节时读取线程崩掉、
+                # stdout 变 None（2026-09-14 实测：sq_meshes 整包因此被误报"镜像损坏"）。
+                encoding="utf-8", errors="replace",
                 **hidden_kwargs(),
             )
             log_summary(f"  rdsquashfs 路径: {tool}", "dim")

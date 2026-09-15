@@ -1048,7 +1048,17 @@ def sqfs_list(path: str) -> Optional[list]:
     tool = _find_sqfs_tool()
     if not tool or not tool.endswith("rdsquashfs.exe"): return None
     try:
-        r = subprocess.run([tool, "--describe", path], capture_output=True, text=True, timeout=30,
+        # ★ 必须显式给编码（2026-09-14 实测修）：`text=True` 不指定编码时 Python 用
+        #   **平台默认**（本机 GBK）解码子进程输出 —— 而镜像里的路径含**非 GBK 字节**
+        #   （俄文/中文条目）时，读取线程直接抛 UnicodeDecodeError 崩掉，`r.stdout`
+        #   变成 None，于是 `sqfs_list` 返回 None、工具报"镜像损坏或缺 rdsquashfs"。
+        #   实测：`gamedata.sq_meshes`（1.96 GB）整包因此被判损坏，而同一镜像用
+        #   utf-8 + errors="replace" 0.07s 就列出 4104 项。路径名是**不可信输入**，
+        #   解码只求不炸（坏字节变 '?'），判定与提取都不依赖它的精确字节。
+        #   ★ 写成**字面关键字**而不是 `**dict`：探针有一条 AST 锁扫"text=True 必须
+        #     同时给 encoding="（`**kwargs` 它看不见，等于给这条锁留洞）。
+        r = subprocess.run([tool, "--describe", path], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=30,
                            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
         if r.returncode != 0: return None
         entries = []
@@ -1171,6 +1181,7 @@ def sqfs_extract(path: str, out_dir: str, files: list = None) -> int:
         else:
             r = subprocess.run([tool, "--unpack-path", "/", "-p", out_dir, path],
                                capture_output=True, text=True, timeout=300,
+                               encoding="utf-8", errors="replace",
                                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
             return -1 if r.returncode == 0 else 0
     except Exception:

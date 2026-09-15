@@ -1468,8 +1468,18 @@ class CanvasTree:
         self._mfont = _tkf.Font(font=T["font_mono"])
         # 按当前缩放换算（px() 的基准是 96 DPI）。行高取"设计值"与"正文行高+余量"
         # 的较大者，保证任何缩放下文字都不会被裁。
-        self.CHK_PAD = max(px(6), 2)
+        # ★ 展开三角**按勾选框定标**（用户口径 2026-09-14："勾选框和三角、文字是错位的，
+        #   统一以勾选框为准"）：尺寸跟着 CHK 等比、中心与勾选框中心同高，并在勾选框左侧
+        #   **预留一条固定槽**（CHK_PAD 里算进 ARROW_W + ARROW_GAP）。
+        #   改前实测（150% 屏、ROW_H=36 / CHK=21）：三角写死画在 `x-12`、纵向 `y+12` ——
+        #   bbox=(-4, 7, 6, 17)：左半边**跑到画布外**，中心比勾选框中心（17.5）高 5.5px，
+        #   离勾选框只剩 2px；文字同样用 `y+12`，也高 5.5px。100% 屏上恰好都是 12，
+        #   所以这条错位只在 HiDPI 上露出来（用户屏幕 2.5K）。
         self.CHK = max(px(14), 12)
+        self.ARROW_W = max(px(8), self.CHK * 9 // 16)
+        self.ARROW_H = max(px(8), self.CHK * 9 // 16)
+        self.ARROW_GAP = max(px(4), 2)
+        self.CHK_PAD = max(px(6), 2) + self.ARROW_W + self.ARROW_GAP
         self.INDENT = max(px(24), self.CHK + px(8))
         self.ROW_H = max(px(24), self._mfont.metrics("linespace") + px(6))
         self.frame = ttk.Frame(master)
@@ -1588,6 +1598,18 @@ class CanvasTree:
         return (x, y + (self.ROW_H - self.CHK) // 2, x + self.CHK,
                 y + (self.ROW_H - self.CHK) // 2 + self.CHK)
 
+    def _row_center(self, row_idx):
+        """一行里**所有元素共用的垂直基准** = 勾选框的垂直中心（用户口径 2026-09-14）。
+
+        为什么以勾选框为准：它是行里唯一一个"有实体边框"的元素，视觉上就是行高的标尺；
+        三角与文字原来各自用写死的 `y + 12`，在 ROW_H≠24 的缩放上就和它错位。
+        没有勾选框（`with_chk=False`）时退回行中心 —— 勾选框本来就居中，两者重合。
+        """
+        r = self._chk_rect(row_idx)
+        if r is not None:
+            return (r[1] + r[3]) / 2.0
+        return row_idx * self.ROW_H + self.ROW_H / 2.0
+
     def _yscrollcmd(self, *args):
         """滚动条更新时同步重绘可见行 (滚动后新行进入视口)."""
         self.vbar.set(*args)
@@ -1609,30 +1631,36 @@ class CanvasTree:
         for i in range(start, end):
             node, level, _ = rows[i]
             y = i * self.ROW_H
+            # ★ 本行唯一的垂直基准（= 勾选框中心）：三角、文件名、状态、大小全部用它，
+            #   不再各写各的 `y + 12`（见 _row_center 的说明）。
+            cy = self._row_center(i)
             if node is not None and node in self._sel:
                 c.create_rectangle(0, y, w, y + self.ROW_H, fill=T["selected"], outline="")
+            x = self.CHK_PAD + self.INDENT * level
             if node is None:
-                c.create_text(self.INDENT * level + self.CHK_PAD + self.CHK + px(6),
-                      y + self.ROW_H // 2, text="(空)",
+                c.create_text(x + self.CHK + px(6), cy, text="(空)",
                               anchor="w", fill=T["text_dim"], font=T["font_mono"])
                 continue
-            x = self.CHK_PAD + self.INDENT * level
             if node.is_dir:
-                self._draw_arrow(c, x - 12, y + 12, node in self._expanded)
-            if self.with_chk:
-                self._draw_chk(c, x, y + (self.ROW_H - self.CHK) // 2, node)
+                # 三角画在勾选框左侧**预留槽**里，纵向中心与勾选框同高
+                self._draw_arrow(c, x - self.ARROW_GAP - self.ARROW_W, cy,
+                                 node in self._expanded)
+            cr = self._chk_rect(i)
+            if cr is not None:
+                # 直接按 _chk_rect 画（与命中判定**同一份几何**），不再各算一遍
+                self._draw_chk(c, cr[0], cr[1], node)
             tx = x + (self.CHK + 6 if self.with_chk else 2)
-            c.create_text(tx, y + 12, text=node.name, anchor="w",
+            c.create_text(tx, cy, text=node.name, anchor="w",
                           fill=T["text_bright"] if node in self._sel else T["text"],
                           font=T["font_mono"])
             if self.row_status is not None:
                 stxt = self.row_status(node)
                 if stxt:
                     text, color_ = stxt
-                    c.create_text(tx + self._mfont.measure(node.name) + 10, y + 12,
+                    c.create_text(tx + self._mfont.measure(node.name) + 10, cy,
                                   text=text, anchor="w", fill=color_, font=T["font_sm"])
             if not node.is_dir:
-                c.create_text(w - 8, y + 12, text=self.fmt_size(node.size),
+                c.create_text(w - 8, cy, text=self.fmt_size(node.size),
                               anchor="e", fill=T["text_dim"], font=T["font_mono"])
 
     def _draw_chk(self, c, x, y, node):
@@ -1654,12 +1682,20 @@ class CanvasTree:
                           x + k * 13 // 16, y + k * 8 // 16,
                           fill=T["text_bright"], width=max(1, px(2)))
 
-    def _draw_arrow(self, c, ax, ay, expanded):
+    def _draw_arrow(self, c, ax, cy, expanded):
+        """展开三角：尺寸**按勾选框等比**、中心与勾选框中心同高（用户口径 2026-09-14）。
+
+        `ax` = 三角左边界，`cy` = 垂直中心（= `_row_center` 给的那个基准）。
+        改前是把 8×9 px 写死在 `(x-12, y+12)`：缩放一大就与勾选框错位、还会被画到画布外。
+        """
+        w, h = self.ARROW_W, self.ARROW_H
+        x0, x1 = ax, ax + w
+        y0, y1 = cy - h / 2.0, cy + h / 2.0
         if expanded:
-            c.create_polygon(ax, ay - 4, ax + 8, ay - 4, ax + 4, ay + 4,
+            c.create_polygon(x0, y0, x1, y0, (x0 + x1) / 2.0, y1,
                              fill=T["text_dim"], outline="")
         else:
-            c.create_polygon(ax, ay - 4, ax + 8, ay, ax, ay + 4, ax, ay - 4,
+            c.create_polygon(x0, y0, x1, cy, x0, y1,
                              fill=T["text_dim"], outline="")
 
     def _hit_row(self, x, y):

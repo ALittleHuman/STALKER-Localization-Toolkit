@@ -476,6 +476,75 @@ def test_engine(tmp):
         assert FS.sqfs_check(os.path.join(tmp, "nonexistent.sq")) == "unknown"
     check("引擎：sqfs_check 对不存在文件返回 unknown", _sqfs_check)
 
+    def _sqfs_roundtrip():
+        """SquashFS 真实往返（封包 → 列表 → 提取），**含非 GBK 的路径名**。
+
+        为什么补这条（2026-09-14）：`sqfs_pack` / `sqfs_list` **此前没有任何探针覆盖**
+        —— 六格式往返只覆盖 DB 系列，而现场安装（NLC Improved [OBT]）几乎全是
+        `gamedata.sq_*`。实测在真实镜像上抓到一个静默缺陷：`subprocess.run(text=True)`
+        不指定编码时 Python 用平台默认（GBK）解码 `rdsquashfs --describe` 的输出，
+        路径里出现非 GBK 字节时**读取线程直接抛 UnicodeDecodeError**、stdout 变 None，
+        于是整包被判"镜像损坏"（`gamedata.sq_meshes` 1.96GB 就是这样被藏起来的，
+        同一镜像用 utf-8 解码 0.07s 就能列出 4104 项）。
+        判据：路径含中文/俄文的镜像，列表必须**原样**列出这些名字、大小正确、
+        提取出来的字节与封进去的一致。缺 `deps/`（外部工具，不入库）时 SKIP。
+        """
+        if not FS._find_sqfs_tool():
+            skip("引擎：SquashFS 真实往返（封包/列表/提取）",
+                 "本机没有 deps/squashfs-tools-ng（外部工具，不入库）")
+            return
+        names = [("配置/中文名.xml", "<x>中文</x>".encode("utf-8")),
+                 ("тест/файл.txt", "Привет".encode("utf-8")),
+                 ("plain/a.bin", bytes(range(64)))]
+        out = os.path.join(tmp, "rt.sqfs")
+        # 目录条目**不传**：`sqfs_pack` 目前忽略 `is_dir`（见下方契约锁），
+        # 而 tar2sqfs 会按文件路径自动建目录 —— 与 fs_app 的封包路径一致。
+        assert FS.sqfs_pack([(p, d, False) for p, d in names], out), "sqfs_pack 失败"
+        ents = FS.sqfs_list(out)
+        assert ents, "sqfs_list 返回空/None（镜像被判损坏？见 docstring）"
+        got = {e["path"].replace("\\", "/"): e for e in ents if not e["is_dir"]}
+        for p, d in names:
+            assert p in got, "列表里没有 %r，实际 %r" % (p, sorted(got))
+            assert got[p]["size_real"] == len(d), \
+                "%s 大小 %r ≠ %d" % (p, got[p]["size_real"], len(d))
+        ex = os.path.join(tmp, "sqfs_out")
+        n = FS.sqfs_extract(out, ex, [{"path": p, "is_dir": False} for p, _ in names])
+        assert n == len(names), "提取了 %d 个（应为 %d）" % (n, len(names))
+        for p, d in names:
+            fp = os.path.join(ex, *p.split("/"))
+            assert os.path.isfile(fp), "没提取出 %r" % p
+            assert open(fp, "rb").read() == d, "%s 内容不一致" % p
+    check("引擎：SquashFS 真实往返（封包/列表/提取，含中文与俄文路径）", _sqfs_roundtrip)
+
+    def _subprocess_text_needs_encoding():
+        """外部工具输出按 **UTF-8** 解：`text=True` 必须同时给 `encoding=`。
+
+        这条是上面那个真实缺陷的**结构锁**：只要 `file_system/stalker_fs.py` 或
+        `apps/fs_app.py` 里再出现"text=True 不给 encoding"的调用，就变红 ——
+        不靠人记住（平台默认编码在别的机器上还可能是别的值）。
+        """
+        import ast as _ast
+        here = os.path.dirname(os.path.abspath(__file__))
+        bad = []
+        for rel in (os.path.join("file_system", "stalker_fs.py"),
+                    os.path.join("apps", "fs_app.py")):
+            p = os.path.join(here, rel)
+            with open(p, encoding="utf-8") as fh:
+                tree = _ast.parse(fh.read(), filename=p)
+            for node in _ast.walk(tree):
+                if not isinstance(node, _ast.Call):
+                    continue
+                fn = node.func
+                if not (isinstance(fn, _ast.Attribute) and fn.attr in ("run", "Popen", "check_output")):
+                    continue
+                kws = {k.arg for k in node.keywords if k.arg}
+                if "text" in kws and "encoding" not in kws:
+                    bad.append("%s:%d" % (rel, node.lineno))
+        assert not bad, ("外部工具输出必须显式按 utf-8 解码（text=True 不给 encoding "
+                         "会用平台默认 GBK，非 GBK 路径会让读取线程崩、整包被判损坏）：%r" % bad)
+    check("引擎：外部工具输出显式指定 utf-8（text=True 必须给 encoding=）",
+          _subprocess_text_needs_encoding)
+
     def _path_traversal_guard():
         """归档内路径**不可信**：逃逸条目必须被拒，合法条目必须落在输出目录内。
 
