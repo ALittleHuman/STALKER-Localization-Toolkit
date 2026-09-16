@@ -19,7 +19,7 @@ STALKER 汉化工具集 — 公共库协调层（re-export）
 
 本文件是**纯 re-export 层**：所有 import 都是对外公开的 API，
 在文件内部"未被使用"是设计使然。末尾的 `__all__` 把这份对外契约**显式**写下来
-（146 个名字，与上面的 import 逐一对齐）：pyflakes 视 `__all__` 中的名字为"已使用"，
+（148 个名字，与上面的 import 逐一对齐）：pyflakes 视 `__all__` 中的名字为"已使用"，
 于是本文件不再需要 run_ci 的整文件豁免——将来谁加了一行 import 却忘了进 `__all__`，
 或者 `__all__` 里写了个不再存在的名字，静态检查都会立刻报出来。
 （`apps/_bootstrap.py` 用的是同一套办法；`stalker_toolkit.py` 是应用入口而非库，
@@ -58,7 +58,7 @@ from toolkit_theme import (
 from toolkit_widgets import (
     refresh_theme, path_row, _make_pump,
     dir_row, count_label, tool_text, tool_header, vscrollbar, AutoScrollbar,
-    wheel_claim,
+    wheel_claim, bar_shown, guard_wheel,
     drop_zone,
     LogBox, log_section, CanvasTree, SplitPane, ScrollViewport, ScrollPanel,
     neutralize_input_focus, install_blank_click_unfocus, install_tab_focus_reset,
@@ -116,7 +116,7 @@ from toolkit_constants import (
 )
 
 # ═══════════════════════════════════════════════════════════════
-# 对外契约（= 本层全部 re-export，150 名，逐一对齐上面的 import）
+# 对外契约（= 本层全部 re-export，152 名，逐一对齐上面的 import）
 # ═══════════════════════════════════════════════════════════════
 __all__ = [
     "APP_NAME", "APP_VERSION", "APP_PRERELEASE", "BUILD_COUNT",
@@ -130,7 +130,7 @@ __all__ = [
     "_hex_to_colorref", "apply_titlebar", "_BG_ROLES", "_role_of", "ui_scale",
     "set_ui_scale", "px", "sync_tk_scaling", "refresh_theme", "path_row",
     "_make_pump", "dir_row", "count_label", "tool_text", "tool_header",
-    "vscrollbar", "AutoScrollbar", "wheel_claim", "ScrollViewport", "ScrollPanel", "drop_zone", "LogBox", "log_section", "CanvasTree",
+    "vscrollbar", "AutoScrollbar", "wheel_claim", "bar_shown", "guard_wheel", "ScrollViewport", "ScrollPanel", "drop_zone", "LogBox", "log_section", "CanvasTree",
     "SplitPane", "plugin_slot_bar", "attach_plugin_context_menu",
     "neutralize_input_focus", "install_blank_click_unfocus", "install_tab_focus_reset",
     "invoke_plugin_callback", "PluginSlot", "tool_dropdown",

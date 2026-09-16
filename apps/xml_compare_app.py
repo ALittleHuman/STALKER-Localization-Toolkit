@@ -8,7 +8,7 @@ from apps._bootstrap import (
 from toolkit import (
     color,
     dir_row, tool_header,
-    LogBox, SplitPane, AutoScrollbar, wheel_claim,
+    LogBox, SplitPane, AutoScrollbar, wheel_claim, bar_shown, guard_wheel,
     _make_pump,
     _HAS_DND,
     errbox, log_summary, log_detail,
@@ -450,6 +450,7 @@ class XMLCompareApp:
         detail_vsb = AutoScrollbar(self.detail_frame, orient="vertical",
                                    command=self._detail_text.yview)
         self._detail_text.configure(yscrollcommand=detail_vsb.set)
+        guard_wheel(self._detail_text, detail_vsb)
         self._detail_text.grid(row=0, column=0, sticky="nsew")
         detail_vsb.grid(row=0, column=1, sticky="ns")
         self._id_frame = ttk.LabelFrame(self.detail_frame, text=" 差异 id（逐条复制）",
@@ -1092,6 +1093,7 @@ class XMLCompareApp:
             sb.pack(side="right", fill="y")
             cv.pack(side="left", fill="both", expand=True)
             self._id_canvas = cv
+            self._id_sb = sb
             self._id_empty = tool_label(parent, "（该文件没有 id 差异）",
                                         font_role="font", fg_role="text_dim")
             cv.bind("<Configure>", lambda e: self._id_paint())
@@ -1133,6 +1135,8 @@ class XMLCompareApp:
         cv = self._id_canvas
         if cv is None:
             return None
+        if not bar_shown(getattr(self, "_id_sb", None)):
+            return None                      # 没有滚动条的地方不许滚（用户规则 2026-09-15）
         before = cv.yview()
         cv.yview_scroll(-1 if e.delta > 0 else 1, "units")
         after = cv.yview()

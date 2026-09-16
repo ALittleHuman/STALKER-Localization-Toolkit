@@ -1709,6 +1709,47 @@ qt 63 / qtbuild 11 / ui 13 / eng 8 / pyflakes 0）；注入 **35/35** 全部符�
 ★ `CopyFromScreen` 只能拍最上层那块区域（会抓到被压住的游戏窗口）——一律用
 `PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT)` + `SetProcessDPIAware()`（同 §7.2 与 §11.x）。
 
+### 11.12 2026-09-15（追加）：**滚动只发生在有滚动条的地方**（用户规则，做成结构强制）
+
+> "没有滚动条就不应该滚动。而且有滚动条的滚动是正常的，没有滚动条的滚动跟屎一样。
+>  我不知道你代码怎么写的。**滚动代码只在有滚动条的地方有**，这很难实现吗？"
+
+这条不是"再修一处"，而是把判据从"逐处修"升级成**一条结构性规则**：**条子此刻真的看得见
+→ 允许滚；看不见 → 一律不滚、也不吃事件**。落地成一个共享助手 + 所有滚轮入口统一走它。
+
+| 落点 | 改法 |
+|---|---|
+| `toolkit_widgets.bar_shown(sb)`（新） | 四看缺一不可：宿主 intended `visible()` + `winfo_manager()` 非空 + `winfo_ismapped()` + 真实尺寸 > 1。任何一项不成立 = "这里没有滚动条" |
+| `toolkit_widgets.guard_wheel(widget, sb)`（新） | 把规则钉在**控件自己**身上（`_wheel_guard` 回调可直调，探针不依赖合成事件）。为什么必须控件级：`tk.Text` / `tk.Listbox` 的**类绑定自带滚轮**，根本不看我们的 `AutoScrollbar` —— 条子藏起来（含"错藏"）它照样滚；控件级 binding 在 bindtags 里排在类绑定之前，返回 `"break"` 就能挡住，条子可见时返回 `None` **完全不干预** |
+| `ScrollViewport.try_scroll` | `yview` 装得下 → 拒绝（原有）；**条子没显示 → 也拒绝**（新） |
+| `CanvasTree._on_wheel` | 同上，条文不可见时直接 `return None`（冒泡给外层） |
+| `LogBox`（Text）/ `vscrollbar()` 助手 / `font_pack_app` 字体列表 | 创建条子时顺手 `guard_wheel(...)` |
+| `XMLCompareApp._id_wheel` + 详情框 | 同上；另存 `self._id_sb` 让探针能强制隐藏它 |
+
+**锁**（`run_app_probe` 新增，三类都验，且**夹具自检不依赖被测函数**）：
+
+| 锁 | 判据 |
+|---|---|
+| 滚轮：**没有滚动条的地方一律不许滚**（Text / 树 / 视口） | ① LogBox 300 行远超视口 → 条子真的可见（`bar_shown` 为真）→ `_wheel_guard` 返回 `None`（不拦）；强制 `pack_forget` 藏条子 → 返回 `"break"` 且真发滚轮后 `yview` 一动不动；② `CanvasTree` 40 行同理（条子可见→不拦；藏起来→`_on_wheel` 后 `yview` 不变）；③ `ScrollViewport` 故意把 scrollregion 撑大造成"能滚"，藏条子后 `try_scroll` 必须返回假且 `yview` 不变 |
+
+★ 夹具两条硬要求（本轮又踩一次）：**窗口必须 deiconify**（withdrawn 的窗口里 `winfo_ismapped()`
+恒 0 → 一切条子都被判"没显示"）；**LogBox 是批量插入**（`after(80)`），加载完要 `log._flush()`
+再量，否则文本还没进控件、条子当然不出现。
+
+**注入**（36 → **37** 条）：新增"条子没显示也照样滚（`bar_shown` 恒为真）" —— 把可见性判据
+拆掉后，上面两条锁分别报 `没有滚动条却还允许滚（用户规则要求 break）` 与
+`没有滚动条却还吃事件`（★ 第一版锚点没写 `\r\n`，`toolkit_widgets.py` 是 CRLF，注入了 0 次被
+`[SKIP]` 抓到——这条坑 §11.11 已记过）。
+
+**★ 夹具自检不许依赖被测函数**：第一版藏条子后写的是 `assert not bar_shown(...)`，而 `bar_shown`
+正是被测对象 —— 注入后它恒为真，红的变成"条子没藏成功，这条锁等于没跑"（**夹具自检**），
+而不是行为断言。改成直接看 `winfo_manager()`/`winfo_ismapped()` 后，红的才是真正的行为判据。
+
+**★ 旧注入被新闸"挡住"了（本轮实测）**：原来那条"id 画布滚不动也吃事件"只拆
+`if after == before:`，可新加的条子闸在更前面就 `return None` —— 注入点**根本走不到**，注入后
+探针全绿（注入器当场报 `[!!] 注入后探针仍然全绿`）。改成一次拆掉**两处**（不看条子 +
+滚不动也吃）后恢复有效。**结论：加了新前置判据，要回头复查被它挡住的旧注入**。
+
 ---
 
 ## 附录 A：如何复核行数

@@ -1045,6 +1045,8 @@ class ScrollViewport(ttk.Frame):
             before = self.canvas.yview()
             if before == (0.0, 1.0):
                 return False                      # 装得下 = 这里**没有滚动条**（不算）
+            if not bar_shown(self.vbar):
+                return False                      # 条子没显示 → 这里不许滚（用户规则 2026-09-15）
             step = -1 if getattr(event, "delta", 0) > 0 else 1
             self.canvas.yview_scroll(step * 3, "units")
             after = self.canvas.yview()
@@ -1260,6 +1262,44 @@ class AutoScrollbar(ttk.Scrollbar):
 _WHEEL_CLAIM = [None]
 
 
+def bar_shown(sb):
+    """条子此刻**真的**看得见吗 —— 用户规则（2026-09-15 原话）：
+
+        > "没有滚动条就不应该滚动。……滚动代码只在有滚动条的地方有。"
+
+    四看缺一不可（与 ARCHITECTURE 的滚动条判据同一套）：宿主的 intended `visible()`
+    + `winfo_manager()` 非空 + `winfo_ismapped()` + 有真实尺寸（>1）。
+    任何一项不成立 = 这里**没有滚动条** → 不许滚、也不许吃事件。
+    """
+    if sb is None:
+        return False
+    try:
+        return (bool(sb.visible()) and bool(sb.winfo_manager())
+                and bool(sb.winfo_ismapped())
+                and sb.winfo_width() > 1 and sb.winfo_height() > 1)
+    except Exception:
+        return False
+
+
+def guard_wheel(widget, sb):
+    """把"没有滚动条就不许滚"钉在**控件自己**身上（先于 Tk 的类绑定执行）。
+
+    为什么非要在控件级拦一次：`tk.Text` / `tk.Listbox` 的**类绑定**自带滚轮处理，
+    它根本不看我们的 `AutoScrollbar` —— 条子被藏起来时（哪怕是"错藏"）它照样滚。
+    控件级 binding 在 bindtags 里排在类绑定之前，返回 "break" 就能挡住；
+    条子看得见时返回 None，**完全不干预**（正常滚动照旧）。
+    """
+    def _guard(_e):
+        return None if bar_shown(sb) else "break"
+    try:
+        widget.bind("<MouseWheel>", _guard, add="+")
+    except Exception:
+        pass
+    widget._wheel_guard = _guard      # 探针直调它（不依赖合成事件能否走到类绑定）
+    return _guard
+
+
+
 def wheel_claim(event=None):
     """声明这次滚轮由我处理；同一次事件（`event.time` 相同）已被别人声明则返回 False。"""
     stamp = getattr(event, "time", None)
@@ -1280,6 +1320,7 @@ def vscrollbar(parent, target):
     sb = AutoScrollbar(parent, orient="vertical", command=target.yview)
     target.configure(yscrollcommand=sb.set)
     sb.pack(side="right", fill="y")
+    guard_wheel(target, sb)
     return sb
 
 
@@ -1369,6 +1410,8 @@ class LogBox(tk.Text):
             sb = AutoScrollbar(parent, orient="vertical", command=self.yview)
             self.configure(yscrollcommand=sb.set)
             sb.pack(side="right", fill="y")
+            self._vbar = sb                # 探针要能强制隐藏它来验"没条子不许滚"
+            guard_wheel(self, sb)          # Text 类绑定会无视我们的条子，必须在控件级拦
             if hbar:
                 hsb = AutoScrollbar(parent, orient="horizontal", command=self.xview)
                 self.configure(xscrollcommand=hsb.set)
@@ -1860,6 +1903,8 @@ class CanvasTree:
         独占；没滚动（只有几行/已到底）就既不声明、也不吃事件，交给外层。
         用户口径 2026-09-13："隐藏的滚动条，代码里不算滚动条。"
         """
+        if not bar_shown(self.vbar):
+            return None                       # 没有滚动条的地方不许滚（用户规则 2026-09-15）
         before = self.canvas.yview()
         self.canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
         after = self.canvas.yview()

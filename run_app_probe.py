@@ -702,6 +702,98 @@ def main():
     else:
         print("  SKIP fs（构造失败）")
 
+    # ── 用户规则（2026-09-15 原话："没有滚动条就不应该滚动。……滚动代码只在有滚动
+    #    条的地方有。"）：**条子没显示的地方，一律不许滚** ────────────────────
+    # 三类都查：ScrollViewport（面板/页面，走 try_scroll 路由）、CanvasTree（自带绑定）、
+    # **LogBox/Text**（Tk 的类绑定自带滚轮，根本不看我们的条子 —— 必须控件级拦）。
+    def no_scroll_without_bar():
+        import toolkit_widgets as _tw4
+        win = tk.Toplevel(_ROOT)
+        try:
+            win.deiconify()                    # ★ withdrawn 的窗口里 ismapped 恒 0
+            win.geometry("%dx%d" % (_tw4.px(420), _tw4.px(240)))
+            fake = type("E", (), {"delta": -120, "time": 555001, "widget": win})()
+
+            # ① Text（LogBox）：内容远超视口 → 条子真的看得见 → 不拦、能滚
+            log = _tw4.LogBox(win, height=6, scrollbar=True)
+            log.pack(fill="both", expand=True)
+            for i in range(300):
+                log.add("line %03d" % i)
+            log._flush()                       # LogBox 是**批量**插入（after(80)），必须催一次
+            for _ in range(8):
+                win.update_idletasks(); win.update()
+            assert _tw4.bar_shown(log._vbar), "内容远超视口时条子本该看得见"
+            assert log._wheel_guard(fake) is None, "条子看得见时不该拦（正常滚动）"
+            # 强制把条子藏起来（模拟"条子没了"的一切情形）→ 必须拦住、且真的滚不动
+            log._vbar.pack_forget()
+            win.update_idletasks(); win.update()
+            # 自检**不许依赖被测函数**（bar_shown 正是被测对象）：直接看控件真实状态
+            assert not log._vbar.winfo_manager() and not log._vbar.winfo_ismapped(), \
+                "条子没藏成功，这条锁等于没跑"
+            assert log._wheel_guard(fake) == "break", "没有滚动条却还允许滚（用户规则要求 break）"
+            before = tuple(log.yview())
+            log.event_generate("<MouseWheel>", delta=-120, x=10, y=10, when="now")
+            for _ in range(8):
+                win.update_idletasks(); win.update()
+            assert tuple(log.yview()) == before, \
+                "条子藏起来后滚轮仍然滚动了：%r → %r" % (before, tuple(log.yview()))
+
+            # ② CanvasTree：多行 → 条子可见 → 能滚；藏起来 → 一下都不许动
+            class _N:
+                def __init__(self, n):
+                    self.name = n; self.path = n; self.is_dir = False; self.size = 0
+                    self.children = {}
+                def add(self, c):
+                    self.children[c.name] = c
+                def dir_state(self):
+                    return None
+            root = _N("")
+            for i in range(40):
+                root.add(_N("f%02d.xml" % i))
+            tree = _tw4.CanvasTree(win, with_chk=False)
+            tree.get().pack(fill="both", expand=True)
+            tree.set_root(root)
+            for _ in range(8):
+                win.update_idletasks(); win.update()
+            assert _tw4.bar_shown(tree.vbar), "40 行装不下时树的条子本该看得见"
+            assert tree.vbar.winfo_ismapped(), "树的条子没映射"
+            tree.vbar.pack_forget()
+            win.update_idletasks(); win.update()
+            assert not tree.vbar.winfo_manager() and not tree.vbar.winfo_ismapped(), \
+                "树的条子没藏成功"
+            tb = tuple(tree.canvas.yview())
+            tree._on_wheel(fake)
+            win.update_idletasks(); win.update()
+            assert tuple(tree.canvas.yview()) == tb, \
+                "树的条子藏起来后 _on_wheel 仍然滚了：%r → %r" % (tb, tuple(tree.canvas.yview()))
+
+            # ③ ScrollViewport：故意造成"能滚"的 scrollregion，再藏条子 → try_scroll 必须拒绝
+            vp = _tw4.ScrollViewport(win, fit="content")
+            vp.pack(fill="both", expand=True)
+            _tw4.ttk.Label(vp.content, text="x" * 2000).pack()
+            for _ in range(8):
+                win.update_idletasks(); win.update()
+            vp.canvas.configure(scrollregion=(0, 0, vp.canvas.winfo_width() + 400,
+                                              vp.canvas.winfo_height() + 800))
+            win.update_idletasks(); win.update()
+            if _tw4.bar_shown(vp.vbar):
+                vp.vbar.pack_forget()
+                win.update_idletasks(); win.update()
+            assert not vp.vbar.winfo_manager() and not vp.vbar.winfo_ismapped(), \
+                "视口的条子没藏成功"
+            vb = tuple(vp.canvas.yview())
+            got = vp.try_scroll(fake)
+            assert not got, "视口没有可见的条子却消费了滚轮（%r）" % (got,)
+            assert tuple(vp.canvas.yview()) == vb, \
+                "视口没有可见的条子却滚了：%r → %r" % (vb, tuple(vp.canvas.yview()))
+        finally:
+            try:
+                win.destroy()
+            except Exception:
+                pass
+    check("滚轮：**没有滚动条的地方一律不许滚**（Text / 树 / 视口，三类都验）",
+          no_scroll_without_bar)
+
     # xml: 模式判定必须取自结果数据（行内 mode 与界面变量背离时曾 KeyError: lines_a）
     x = built.get("xml")
     if x is not None:
@@ -757,7 +849,13 @@ def main():
                 "id 画布的滚轮没走 _id_wheel（又变回内联 lambda？）"
 
             holder = tk.Frame(_ROOT)
+            win = tk.Toplevel(_ROOT)
             try:
+                # ★ 夹具必须在**已映射**的窗口里：`bar_shown()` 四看里含 `winfo_ismapped()`，
+                #   而 withdrawn 的 `_ROOT` 里所有子控件 ismapped 恒 0 → 一律被判"没有条子"。
+                win.deiconify()
+                win.geometry("%dx%d" % (_W.px(520), _W.px(360)))
+                holder = tk.Frame(win)
                 holder.pack(fill="both", expand=True)
                 box = x._build_id_list(holder, [("仅 A", "id%d" % i) for i in range(3)],
                                        height=200)
@@ -774,13 +872,21 @@ def main():
                 # ② 装不下：真滚 + break
                 box2 = x._build_id_list(holder, [("仅 A", "id%d" % i) for i in range(200)],
                                         height=120)
-                _ROOT.update_idletasks(); _ROOT.update()
+                for _ in range(8):
+                    win.update_idletasks(); win.update()
                 cv = x._id_canvas
+                # ★ 用户规则（2026-09-15）：**有滚动条的地方才滚**。200 条 id 装不下
+                #   → 这里条子**必须真的出现**（装不下却没有条，本身就是用户报的那类缺陷）；
+                #   条子在 → 滚轮照常滚、照常吃事件。
+                assert _W.bar_shown(getattr(x, "_id_sb", None)), \
+                    "内容装不下（200 条 id）却没有可见的滚动条 —— 这正是用户报的缺陷"
                 before = cv.yview()
                 r2 = wheel(-120, 222)
                 after = cv.yview()
                 assert r2 == "break", "真的滚动了就该吃掉事件，实际 %r" % (r2,)
                 assert after != before, "返回 break 却没真的滚动：%r → %r" % (before, after)
+                # ②b 条子被藏起来 → 一下都不许滚（哪怕 scrollregion 还很大）
+                _hide_bar = True
                 # ③ 独占：同一次事件（time 相同）已被别人声明 → 撤销自己的滚动
                 _W._WHEEL_CLAIM[0] = 333
                 before3 = cv.yview()
@@ -789,13 +895,27 @@ def main():
                 assert cv.yview() == before3, \
                     "同一次滚轮已被别人声明，这里必须撤销自己的滚动：%r → %r" % (
                         before3, cv.yview())
+                # ③b 条子被藏起来 → 一下都不许滚、也不许吃事件（用户规则 2026-09-15：
+                #     "滚动代码只在有滚动条的地方有"）。放在独占判据**之后**，
+                #     否则条子已经藏了，③ 的"被别人声明仍要吃事件"会拿到 None。
+                if _hide_bar:
+                    x._id_sb.pack_forget()
+                    win.update_idletasks(); win.update()
+                    assert not x._id_sb.winfo_manager() and not x._id_sb.winfo_ismapped(), \
+                        "条子没藏成功，这条判据等于没跑"
+                    before4 = cv.yview()
+                    r4 = wheel(-120, 224)
+                    assert r4 is None, "没有滚动条却还吃事件，实际 %r" % (r4,)
+                    assert cv.yview() == before4, \
+                        "没有滚动条却滚了：%r → %r" % (before4, cv.yview())
                 assert box2 is not None
             finally:
                 _W._WHEEL_CLAIM[0] = None
-                try:
-                    holder.destroy()
-                except Exception:
-                    pass
+                for _w in (holder, win):
+                    try:
+                        _w.destroy()
+                    except Exception:
+                        pass
         check("滚轮：id 差异画布与全局规则一致（能滚才吃 + 独占声明）",
               id_box_wheel_follows_unified_rules)
 

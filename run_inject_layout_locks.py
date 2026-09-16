@@ -196,10 +196,25 @@ INJECTIONS = [
      "        if not wheel_claim(e):",
      "        if False:                      # 注入：不声明独占",
      "滚轮：id 差异画布与全局规则一致"),
-    (XCA, "run_app_probe.py", "id 画布滚不动也吃事件（外层页面滚不动）",
-     "        if after == before:",
-     "        if False:                      # 注入：滚不动也吃",
-     "滚轮：id 差异画布与全局规则一致"),
+    # ★ 2026-09-15：这条注入原来只拆 `if after == before:`（滚不动也吃）。加了"没条子
+    #   不许滚"的闸之后，它**不再复现机制**了 —— 闸在更前面就返回 None，注入点根本走不到
+    #   （实测注入后探针全绿）。改成一次拆掉两处：不看条子 + 滚不动也吃。
+    (XCA, "run_app_probe.py", "id 画布不看条子 + 滚不动也吃事件",
+     '        if not bar_shown(getattr(self, "_id_sb", None)):\n'
+     '            return None                      # 没有滚动条的地方不许滚（用户规则 2026-09-15）\n'
+     '        before = cv.yview()\n'
+     '        cv.yview_scroll(-1 if e.delta > 0 else 1, "units")\n'
+     '        after = cv.yview()\n'
+     '        if after == before:\n'
+     '            return None                      # 滚不动 → 这里没有可用的滚动条\n',
+     '        if False:                            # 注入：不看条子（没条子也照样滚）\n'
+     '            return None\n'
+     '        before = cv.yview()\n'
+     '        cv.yview_scroll(-1 if e.delta > 0 else 1, "units")\n'
+     '        after = cv.yview()\n'
+     '        if False:                            # 注入：滚不动也吃事件\n'
+     '            return None\n',
+     "装得下时不该吃滚轮"),
     # ㉙ 外部工具输出按平台默认编码解（2026-09-14：真实镜像上抓到 sq_meshes 整包被藏）
     (SF, "run_functional_probe.py", "rdsquashfs 输出退回平台默认编码（非 GBK 路径整包判损坏）",
      '        r = subprocess.run([tool, "--describe", path], capture_output=True, text=True,\n'
@@ -261,6 +276,14 @@ INJECTIONS = [
      '        if False:                      # 注入：竖条永不 pack（藏着的滚动）\r\n'
      '            vbar.pack(side="right", fill="y")',
      "能滚却看不到条"),
+    # ㊱ 用户规则（2026-09-15）："没有滚动条就不应该滚动。滚动代码只在有滚动条的地方有。"
+    #     把"条子是否真的看得见"判据拆掉（永远认为可见）→ 没条子的地方照样滚 → 锁变红。
+    (TW, "run_app_probe.py", "条子没显示也照样滚（bar_shown 恒为真）",
+     '    if sb is None:\r\n'
+     '        return False\r\n',
+     '    if True:                      # 注入：永远认为条子可见（没条子也照样滚）\r\n'
+     '        return True\r\n',
+     "没有滚动条的地方一律不许滚"),
 ]
 
 

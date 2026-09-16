@@ -5,7 +5,7 @@ from apps._bootstrap import (
 )
 
 from toolkit import (color, tool_header, dir_row, SplitPane, _make_pump,
-                     AutoScrollbar,
+                     AutoScrollbar, guard_wheel,
                      log_summary, log_detail,
                      plugin_slot_bar, plugin_entries, errbox,
                      tool_panel,
@@ -310,6 +310,7 @@ class FontPackApp:
         list_frame.pack(fill="both", expand=True)
         lb = themed_listbox(list_frame)
         sb = AutoScrollbar(list_frame, orient="vertical", command=lb.yview)
+        guard_wheel(lb, sb)          # Listbox 类绑定不看我们的条子
         lb.configure(yscrollcommand=sb.set)
         lb.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
