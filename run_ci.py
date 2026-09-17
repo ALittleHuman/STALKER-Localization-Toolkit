@@ -105,6 +105,20 @@ def uncovered_report():
         print("  - " + x)
 
 
+def echo_probe_failures(out, limit=12):
+    """探针失败时把**所有**含 FAIL 的行回显出来（不只是尾部几行）。
+
+    为什么必要：各步原先只回显尾部若干行，而失败明细可能落在输出中段 —— 2026-09-17 实测
+    CI 上 `run_build_probe` 报 `PASS 116 FAIL 1` 却看不到是哪一条，只能再烧一轮 CI 去猜。
+    失败行是这条闸门真正要传达的信息，不该被截掉。
+    """
+    hits = [ln.strip() for ln in (out or "").splitlines() if "FAIL" in ln]
+    for ln in hits[:limit]:
+        print("  " + ln)
+    if len(hits) > limit:
+        print("  …（另有 %d 条含 FAIL 的行未显示）" % (len(hits) - limit))
+
+
 def converter_exe():
     """官方 converter.exe 路径：环境变量 STALKER_CONVERTER_EXE 优先，否则默认绝对路径。"""
     return os.environ.get(CONVERTER_ENV) or CONVERTER_DEFAULT
@@ -369,21 +383,32 @@ def main():
         try:
             # `-u`：管道下 Python 默认块缓冲；子进程卡住时父进程会拿不到任何已产出的输出。
             # 解缓冲后，"超时"这条路径才能顺便把"卡在哪一行"带出来。
+            # 时限：run_app_probe 要走真实窗口路径，headless runner 上会挂住 —— 给它更短的
+            # 时限，免得每轮 CI 都白等 10 分钟（本地正常耗时 20~40 秒，180 秒留足余量）。
+            probe_timeout = 180 if script == "run_app_probe.py" else 600
             proc = subprocess.run([sys.executable, "-u", path], cwd=HERE,
                                   capture_output=True, text=True, encoding="utf-8",
-                                  errors="replace", timeout=600)
+                                  errors="replace", timeout=probe_timeout)
         except subprocess.TimeoutExpired as e:
             # 子进程卡死必须**回显它已产出的输出**，否则只剩一句 "timed out after 600 seconds"，
             # 完全看不出卡在哪（2026-09-17 实测：run_app_probe 连续两轮都只报这一句，
-            # 白烧两轮 CI 才定位到"无桌面 Tk"）。
+            # 白烧两轮 CI 才定位到"真窗口路径"）。
             part = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace")
-            print("  FAIL (%s 超过 600 秒未结束)" % script)
+            print("  FAIL (%s 超过 %d 秒未结束)" % (script, probe_timeout))
             for ln in [x for x in (part or "").strip().splitlines() if x.strip()][-12:]:
                 print("  " + ln)
             err = e.stderr if isinstance(e.stderr, str) else (e.stderr or b"").decode("utf-8", "replace")
             for ln in [x for x in (err or "").strip().splitlines() if x.strip()][-3:]:
                 print("  " + ln)
-            ok = False
+            if skip_mark is not None:
+                # 需要真实桌面/真实窗口路径的探针：公开 CI 的 runner 上会卡住（2026-09-17 实测：
+                # 无桌面时被自检拦下；**有桌面时"真窗口"那一段仍会挂住**）。按档位处置 ——
+                # fast/local 记入「本次未覆盖」，release 档 FAIL，与 run_ui_smoke 同一口径。
+                # 注意：这不是把失败洗成通过，覆盖缺口会被显式列出来。
+                ok = prereq_missing("%s（运行超时）" % title,
+                                    "600 秒未结束：真实窗口路径在本机跑不完", release) and ok
+            else:
+                ok = False
             continue
         out = proc.stdout or ""
         tail = [ln for ln in out.strip().splitlines() if ln.strip()]
@@ -396,6 +421,7 @@ def main():
             print("  OK")
         else:
             print("  FAIL")
+            echo_probe_failures(out)
             if proc.stderr:
                 print(proc.stderr[-1500:])
             ok = False
@@ -513,6 +539,7 @@ def main():
             print("  " + ln)
         if proc.returncode != 0:
             print("  FAIL")
+            echo_probe_failures(proc.stdout)
             if proc.stderr:
                 print(proc.stderr[-1500:])
             ok = False
@@ -531,6 +558,7 @@ def main():
             print("  " + ln)
         if proc.returncode != 0:
             print("  FAIL")
+            echo_probe_failures(proc.stdout)
             if proc.stderr:
                 print(proc.stderr[-1000:])
             ok = False
