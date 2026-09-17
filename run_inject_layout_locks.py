@@ -292,6 +292,17 @@ INJECTIONS = [
      '              and self._prev_status is not None):\r\n',
      '        elif False:                      # 注入：不恢复前置状态（停在"…中"）\r\n',
      "任务壳：收尾后"),
+    # ㊳㊴ 用户拍板的"选项 B"（不再依赖 sqfs2tar）：大小改由**纯 Python 读元数据**给出。
+    #     ① 读取器返回空 → 大小全 0（旧行为）→ 往返锁的大小断言必须红；
+    #     ② 失败分支不写 sqfs_last_error → "失败可见"锁必须红。
+    (SF, "run_functional_probe.py", "SquashFS 读取器返回空（大小退回静默 0 B）",
+     '        return _sqfs_walk_sizes(fh, sb)',
+     '        return {}                          # 注入：取不到大小（静默 0 B）',
+     "SquashFS 真实往返"),
+    (SF, "run_functional_probe.py", "取大小失败静默（不写 sqfs_last_error）",
+     '            sqfs_last_error = "%s: %s" % (type(e).__name__, e)',
+     '            sqfs_last_error = None        # 注入：失败静默（用户只看到 0 B）',
+     "取大小失败**要可见**"),
 ]
 
 

@@ -771,6 +771,12 @@ class FSToolApp:
                         self.loaded[path] = self._build_model(entries, path)
                         nf = sum(1 for e in entries if not e.get("is_dir"))
                         log_summary(f"  SquashFS: {len(entries)} 项, {nf} 文件", "ok")
+                        # ★ 取大小失败要**说出来**（2026-09-17）：以前那条路是
+                        #   `try/except pass` + 拿不到就留 0 → 界面上全是 0 B 而没有任何提示，
+                        #   用户只能猜"是不是镜像坏了"。
+                        if stalker_fs.sqfs_last_error:
+                            log_summary("  ⚠ 未能读取文件大小（列表仍可用）：%s"
+                                        % stalker_fs.sqfs_last_error, "warn")
                     else:
                         log_summary("  SquashFS 列表失败（镜像损坏或缺 rdsquashfs）", "err")
                         self._diagnose_sqfs(path)

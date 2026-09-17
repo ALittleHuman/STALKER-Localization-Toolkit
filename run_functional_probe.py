@@ -503,6 +503,8 @@ def test_engine(tmp):
         ents = FS.sqfs_list(out)
         assert ents, "sqfs_list 返回空/None（镜像被判损坏？见 docstring）"
         got = {e["path"].replace("\\", "/"): e for e in ents if not e["is_dir"]}
+        assert FS.sqfs_last_error is None, \
+            "读取器成功时不该留失败提示：%r" % (FS.sqfs_last_error,)
         for p, d in names:
             assert p in got, "列表里没有 %r，实际 %r" % (p, sorted(got))
             assert got[p]["size_real"] == len(d), \
@@ -515,6 +517,55 @@ def test_engine(tmp):
             assert os.path.isfile(fp), "没提取出 %r" % p
             assert open(fp, "rb").read() == d, "%s 内容不一致" % p
     check("引擎：SquashFS 真实往返（封包/列表/提取，含中文与俄文路径）", _sqfs_roundtrip)
+
+    def _sqfs_size_failure_is_visible():
+        """**取不到文件大小必须说出来**（不再 `try/except pass` + 静默 0 B）。
+
+        背景（2026-09-17）：大小原本走 `sqfs2tar`（被 360 按哈希拦）→ 拿不到就留 0，
+        界面上全是 0 B 而没有任何提示。现在大小由**纯 Python 读元数据**给出
+        （lz4/gzip/xz/zstd；真实镜像实测 0.01~0.24s，原来 54~99s）。
+
+        本机没有 lzo 解码 → 拿一张 lzo 镜像必然走失败分支，正好验"失败可见"：
+        列表仍可用（结构走 `rdsquashfs --describe`）、大小全 0、且 `sqfs_last_error` 有值。
+        造不出 lzo 镜像就 SKIP。
+        """
+        tool = FS._find_sqfs_tool()
+        if not tool:
+            skip("引擎：SquashFS 取大小失败要可见", "缺 deps/squashfs-tools-ng")
+            return
+        import subprocess
+        import tarfile as _tf
+        bin_dir = os.path.dirname(tool)
+        t2s = os.path.join(bin_dir, "tar2sqfs.exe")
+        if not os.path.exists(t2s):
+            skip("引擎：SquashFS 取大小失败要可见", "缺 tar2sqfs.exe")
+            return
+        src = os.path.join(tmp, "lzo_src")
+        os.makedirs(os.path.join(src, "sub"), exist_ok=True)
+        with open(os.path.join(src, "a.txt"), "wb") as fh:
+            fh.write(b"A" * 1000)
+        with open(os.path.join(src, "sub", "b.bin"), "wb") as fh:
+            fh.write(b"B" * 4096)
+        tar_path = os.path.join(tmp, "lzo.tar")
+        with _tf.open(tar_path, "w") as tf:
+            tf.add(os.path.join(src, "a.txt"), arcname="a.txt")
+            tf.add(os.path.join(src, "sub", "b.bin"), arcname="sub/b.bin")
+        img = os.path.join(tmp, "lzo.sqfs")
+        r = subprocess.run('cmd /c ""%s" -c lzo "%s" < "%s""' % (t2s, img, tar_path),
+                    capture_output=True, timeout=300,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+        if r.returncode != 0 or not os.path.exists(img):
+            skip("引擎：SquashFS 取大小失败要可见", "本机 tar2sqfs 不支持 lzo")
+            return
+        ents = FS.sqfs_list(img)
+        assert ents, "lzo 镜像的**列表**应该仍然可用（结构走 rdsquashfs --describe）"
+        files = [e for e in ents if not e["is_dir"]]
+        assert files, "lzo 镜像里应该有文件"
+        assert all(e["size_real"] == 0 for e in files), \
+            "本机解不了 lzo，大小应为 0（这里若拿到值说明读取器行为变了，需复核）"
+        assert FS.sqfs_last_error, \
+            "取大小失败却没有任何提示 —— 用户只能看到一排 0 B（这正是本轮要消灭的静默）"
+    check("引擎：SquashFS 取大小失败**要可见**（不再静默 0 B）", _sqfs_size_failure_is_visible)
 
     def _subprocess_text_needs_encoding():
         """外部工具输出按 **UTF-8** 解：`text=True` 必须同时给 `encoding=`。

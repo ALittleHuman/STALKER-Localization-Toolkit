@@ -1040,10 +1040,225 @@ def _find_sqfs_tool():
             _SQFS_TOOL = c
             return c
     return None
+
+# ══════════════════════════════════════════════════════════════════════════
+# SquashFS 元数据直读（2026-09-17，用户拍板的"选项 B"：不再依赖 sqfs2tar）
+#
+# 为什么自己做：`sqfs2tar` 被 360 按**哈希**拦（`Access is denied`，复制改名也没用），
+# 而它是原来**唯一**能拿到"精确文件大小"的路子；rdsquashfs 三条路都拿不到
+# （`--describe` 无大小 / `--list` 给人读单位 `4k` / `--stat` 一文件一进程 71.6ms），
+# `sqfsdiff` 只报"哪个路径多了"。
+# 顺带把"读取慢"一起解决：真实镜像（明文 hsqs + LZ4 + 128KB 块）
+# 用这套读元数据是 **0.01~0.02s**，而 sqfs2tar 要 **54~99s**。
+#
+# 三个必须记住的格式坑（都是实测踩出来的）：
+#   ① 元数据块的 **2 字节头在块起始处**；头 bit15=未压缩、低 15 位=压缩长度；
+#   ② 跨块前进**不能按 8192**（那只是解压后大小）—— 必须 `块起始 + 2 + 压缩长度`；
+#   ③ **不许对打包 ref 做算术**（`ref + 16`）：真实镜像里 inode 会**跨元数据块**
+#      （实测 sq_levels 起点 8180 + 16 = 8196 > 8192）→ 必须用能跨块的游标。
+# ══════════════════════════════════════════════════════════════════════════
+
+_SQFS_MAGIC = b"hsqs"
+_SQFS_SB_SIZE = 96
+_SQFS_T_DIR, _SQFS_T_FILE = 1, 2
+_SQFS_T_SLINK = 3
+_SQFS_T_DIR_X, _SQFS_T_FILE_X, _SQFS_T_SLINK_X = 8, 9, 10
+
+sqfs_last_error = None          # 最近一次 sqfs_list 取大小的失败原因（UI 要显示出来）
+
+
+def _sqfs_lz4_block(src):
+    """LZ4 **块**格式（squashfs 用的就是它，没有帧头）。"""
+    out = bytearray()
+    i, n = 0, len(src)
+    while i < n:
+        token = src[i]; i += 1
+        lit = token >> 4
+        if lit == 15:
+            while True:
+                b = src[i]; i += 1
+                lit += b
+                if b != 255:
+                    break
+        out += src[i:i + lit]; i += lit
+        if i >= n:
+            break                       # 最后一组只有字面量
+        offset = src[i] | (src[i + 1] << 8); i += 2
+        mlen = token & 0x0F
+        if mlen == 15:
+            while True:
+                b = src[i]; i += 1
+                mlen += b
+                if b != 255:
+                    break
+        mlen += 4
+        start = len(out) - offset
+        if offset == 0 or start < 0:
+            raise ValueError("LZ4 块损坏（offset=%d）" % offset)
+        for k in range(mlen):
+            out.append(out[start + k])
+    return bytes(out)
+
+
+def _sqfs_decompress(comp, raw):
+    if comp == 1:
+        import zlib
+        return zlib.decompress(raw)
+    if comp == 4:
+        import lzma
+        return lzma.LZMADecompressor(format=lzma.FORMAT_XZ).decompress(raw)
+    if comp == 6:
+        from compression import zstd
+        return zstd.decompress(raw)
+    if comp == 5:
+        return _sqfs_lz4_block(raw)
+    raise ValueError("暂不支持的压缩 id=%d（lzo 无标准库实现）" % comp)
+
+
+class _SqfsMeta:
+    """元数据表读取器（inode 表 / 目录表通用）：按 2 字节头逐块读，可跨块。"""
+
+    def __init__(self, fh, base, comp):
+        self.fh, self.base, self.comp = fh, base, comp
+        self.cache = {}
+
+    def blk(self, start):
+        hit = self.cache.get(start)
+        if hit is not None:
+            return hit
+        self.fh.seek(self.base + start)
+        head = self.fh.read(2)
+        if len(head) < 2:
+            raise ValueError("元数据块越界（%d）" % start)
+        hdr = int.from_bytes(head, "little")
+        comp_size, stored = hdr & 0x7FFF, bool(hdr & 0x8000)
+        raw = self.fh.read(comp_size)
+        if len(raw) != comp_size:
+            raise ValueError("元数据块截断（%d）" % start)
+        data = raw if stored else _sqfs_decompress(self.comp, raw)
+        nxt = start + 2 + comp_size
+        self.cache[start] = (data, nxt)
+        return data, nxt
+
+
+class _SqfsCur:
+    """元数据游标：跨块连续读；**不**对打包 ref 做算术。"""
+
+    def __init__(self, meta, ref=None, block=None, off=None):
+        self.m = meta
+        if ref is not None:
+            self.block, self.off = ref >> 16, ref & 0xFFFF
+        else:
+            self.block, self.off = block, off
+
+    def read(self, n):
+        out = b""
+        while n > 0:
+            data, nxt = self.m.blk(self.block)
+            if self.off >= len(data):
+                self.block, self.off = nxt, 0
+                continue
+            take = min(n, len(data) - self.off)
+            out += data[self.off:self.off + take]
+            self.off += take
+            n -= take
+            if self.off >= len(data):
+                self.block, self.off = nxt, 0
+        return out
+
+
+def _sqfs_read_inode(mt, ref):
+    """返回 (类型, 文件大小, 目录起始块, 目录块内偏移)。"""
+    c = _SqfsCur(mt, ref=ref)
+    itype = int.from_bytes(c.read(2), "little")
+    c.read(14)                                    # perm/uid/gid/mtime/inode_number
+    if itype == _SQFS_T_DIR:
+        sb = int.from_bytes(c.read(4), "little")
+        c.read(4)                                 # nlink
+        fsize = int.from_bytes(c.read(2), "little")
+        boff = int.from_bytes(c.read(2), "little")
+        c.read(4)                                 # parent
+        return itype, fsize, sb, boff
+    if itype == _SQFS_T_DIR_X:
+        c.read(4)                                 # nlink
+        fsize = int.from_bytes(c.read(4), "little")
+        sb = int.from_bytes(c.read(4), "little")
+        c.read(4)                                 # parent
+        c.read(2)                                 # i_count
+        boff = int.from_bytes(c.read(2), "little")
+        return itype, fsize, sb, boff
+    if itype == _SQFS_T_FILE:
+        c.read(8)                                 # blocks_start + fragment
+        c.read(4)                                 # block_offset
+        fsize = int.from_bytes(c.read(4), "little")
+        return itype, fsize, None, None
+    if itype == _SQFS_T_FILE_X:
+        c.read(8)                                 # blocks_start
+        fsize = int.from_bytes(c.read(8), "little")
+        return itype, fsize, None, None
+    if itype in (_SQFS_T_SLINK, _SQFS_T_SLINK_X):
+        c.read(4)                                 # nlink
+        return itype, int.from_bytes(c.read(4), "little"), None, None
+    return itype, 0, None, None
+
+
+def _sqfs_walk_sizes(fh, sb):
+    """走目录表，返回 {路径: 大小}（目录不计）。"""
+    mt_i = _SqfsMeta(fh, sb["inode_table"], sb["compression"])
+    mt_d = _SqfsMeta(fh, sb["dir_table"], sb["compression"])
+    sizes = {}
+    stack = [(sb["root_ref"], "")]
+    while stack:
+        ref, path = stack.pop()
+        itype, size, sblock, boff = _sqfs_read_inode(mt_i, ref)
+        if itype not in (_SQFS_T_DIR, _SQFS_T_DIR_X):
+            continue
+        data = _SqfsCur(mt_d, block=sblock, off=boff).read(size) if size else b""
+        i = 0
+        while i + 12 <= len(data):
+            count = int.from_bytes(data[i:i + 4], "little")
+            sblk = int.from_bytes(data[i + 4:i + 8], "little")
+            i += 12
+            for _k in range(count + 1):
+                if i + 8 > len(data):
+                    break
+                e_off = int.from_bytes(data[i:i + 2], "little")
+                e_type = int.from_bytes(data[i + 4:i + 6], "little")
+                nsz = int.from_bytes(data[i + 6:i + 8], "little") + 1
+                i += 8
+                name = data[i:i + nsz].decode("utf-8", "replace")
+                i += nsz
+                if e_type == 0:                  # 该组的"下一组"哨兵
+                    break
+                child = (path + "/" + name) if path else name
+                child_ref = (sblk << 16) | e_off
+                if e_type in (_SQFS_T_DIR, _SQFS_T_DIR_X):
+                    stack.append((child_ref, child))
+                else:
+                    _, csize, _, _ = _sqfs_read_inode(mt_i, child_ref)
+                    sizes[child] = csize
+    return sizes
+
+
+def _sqfs_meta_sizes(path):
+    """纯 Python 取精确文件大小：{路径: 字节数}。失败抛异常（调用方兜住）。"""
+    with open(path, "rb") as fh:
+        head = fh.read(_SQFS_SB_SIZE)
+        if head[:4] != _SQFS_MAGIC:
+            raise ValueError("不是明文 SquashFS 镜像")
+        import struct as _struct
+        (_inodes, _mk, _bs, _frags, comp, _blog, _flags, _ids, _vmaj, _vmin,
+         root_ref, _used, _idtab, _xtab, inode_table, dir_table, _ftab) = \
+            _struct.unpack_from("<IIIIHHHHHHQQQQQQQ", head, 4)
+        sb = dict(compression=comp, root_ref=root_ref,
+                  inode_table=inode_table, dir_table=dir_table)
+        return _sqfs_walk_sizes(fh, sb)
+
+
 def sqfs_list(path: str) -> Optional[list]:
     """List entries in a PLAIN SquashFS image, with real file sizes.
     Structure via rdsquashfs --describe; sizes via sqfs2tar (one pass)."""
-    import subprocess, io, tarfile
+    import subprocess
     if sqfs_check(path) != "sqfs": return None
     tool = _find_sqfs_tool()
     if not tool or not tool.endswith("rdsquashfs.exe"): return None
@@ -1076,20 +1291,15 @@ def sqfs_list(path: str) -> Optional[list]:
             p = p.replace("\\", "/")
             entries.append({"path": p, "size_real": 0,
                             "is_dir": (etype == "dir"), "offset": 0})
-        # Sizes: one sqfs2tar pass
-        base = os.path.dirname(tool)
-        t2t = os.path.join(base, "sqfs2tar.exe")
+        # Sizes: **纯 Python 读元数据**（2026-09-17：不再用 sqfs2tar —— 它被 360
+        # 按哈希拦、且慢 3000 倍；真实镜像实测 0.01~0.02s vs 54~99s）
+        global sqfs_last_error
         sizes = {}
-        if os.path.exists(t2t):
-            try:
-                r2 = subprocess.run([t2t, path], capture_output=True, timeout=120,
-                                   creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-                if r2.returncode == 0:
-                    tar = tarfile.open(fileobj=io.BytesIO(r2.stdout))
-                    for m in tar.getmembers():
-                        sizes[m.name.replace("\\", "/")] = m.size
-            except Exception:
-                pass
+        try:
+            sizes = _sqfs_meta_sizes(path)
+            sqfs_last_error = None
+        except Exception as e:                    # 取不到就**如实报出来**，不静默 0 B
+            sqfs_last_error = "%s: %s" % (type(e).__name__, e)
         for e in entries:
             if not e["is_dir"] and e["path"] in sizes:
                 e["size_real"] = sizes[e["path"]]
