@@ -57,6 +57,14 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
+# 子进程同样要兜底 —— 上面只改了**本进程**的流，而探针是被 spawn 出去的独立进程：
+# 它们继承本进程的环境，控制台编码不对（本地 GBK、GitHub runner 是 **cp1252**）时，
+# 探针里大量中文 print 会抛 UnicodeEncodeError 把整轮打断（实测：runner 上 8 个探针
+# 全挂在这一句上，与代码逻辑无关）。直接赋值而非 setdefault：闸门的职责是"在任何
+# 控制台下都能跑完"，调用者显式设了别的编码也不该让整轮红掉。
+os.environ["PYTHONIOENCODING"] = "utf-8"
+os.environ["PYTHONUTF8"] = "1"
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # ── 外部前提 / 覆盖清单（方案 3：两级门禁）──────────────────────────────
