@@ -289,11 +289,14 @@ probe=
 
 ## 已知问题
 
-- **NLC Improved（魔改新版 OGSR）上部分超长文本字段渲染异常**：个别超长段落游戏内显示为方块与
-  西里尔字母，疑似引擎局部按 windows-1251 处理；字库侧已验证无缺字、坐标无误。Golden Sphere OGSR
-  （旧版 OGSR）未复现。见 [#1](https://github.com/ALittleHuman/STALKER-Localization-Toolkit/issues/1)。
-- **NLC Improved 上换行时机偏早**：引擎按 INI 字符宽度排版，而当前宽度参考 CN_Pack_Generator 的 GDI
-  advance，视觉正常但引擎认为行宽偏大。NLC 独有。见 [#2](https://github.com/ALittleHuman/STALKER-Localization-Toolkit/issues/2)。
+- **NLC Improved 的引擎侧换行 / 渲染问题（[#1](https://github.com/ALittleHuman/STALKER-Localization-Toolkit/issues/1) /
+  [#2](https://github.com/ALittleHuman/STALKER-Localization-Toolkit/issues/2)——已由引擎补丁解决）**：
+  根因在引擎 —— 它把 3 字节汉字当作**两个 1 字节字符**来切分，于是有两种表现：个别超长段落显示为
+  方块 + 西里尔字母；以及"视觉字宽正常、引擎却认为行宽偏大"导致**换行偏早**。
+  用**引擎 UTF-8 补丁**（把 `MultiByteToWideChar(65001, …)` 的 `cbMultiByte` 立即数 `0x02` 改成
+  `0x03`）打过之后即正常。工具侧的职责边界已实测排除：字库中所有字符都在 DDS 内、INI 坐标无误。
+  ⚠ 该补丁目前是**实验性内部件**，只覆盖 NLC Improved [OBT] 的 `bin_x64\xrEngine.exe` 那一份构建，
+  **暂不随发行包发布**。
 - **lzo 压缩的 SquashFS 取不到文件大小**：列表可用、大小显示 0 并给出提示（其余压缩算法正常）。
 - **文件系统页的合并语义与引擎不一致**：当前同名文件保留**先**加载的那份（first-wins），而 X-Ray
   是「后者为准 + 散装最后覆盖」。属行为变更，尚未修改。
