@@ -366,9 +366,25 @@ def main():
             print(f"  FAIL ({script} 不在仓库里：门禁被删/改名了？)")
             ok = False
             continue
-        proc = subprocess.run([sys.executable, path], cwd=HERE,
-                              capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", timeout=600)
+        try:
+            # `-u`：管道下 Python 默认块缓冲；子进程卡住时父进程会拿不到任何已产出的输出。
+            # 解缓冲后，"超时"这条路径才能顺便把"卡在哪一行"带出来。
+            proc = subprocess.run([sys.executable, "-u", path], cwd=HERE,
+                                  capture_output=True, text=True, encoding="utf-8",
+                                  errors="replace", timeout=600)
+        except subprocess.TimeoutExpired as e:
+            # 子进程卡死必须**回显它已产出的输出**，否则只剩一句 "timed out after 600 seconds"，
+            # 完全看不出卡在哪（2026-09-17 实测：run_app_probe 连续两轮都只报这一句，
+            # 白烧两轮 CI 才定位到"无桌面 Tk"）。
+            part = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace")
+            print("  FAIL (%s 超过 600 秒未结束)" % script)
+            for ln in [x for x in (part or "").strip().splitlines() if x.strip()][-12:]:
+                print("  " + ln)
+            err = e.stderr if isinstance(e.stderr, str) else (e.stderr or b"").decode("utf-8", "replace")
+            for ln in [x for x in (err or "").strip().splitlines() if x.strip()][-3:]:
+                print("  " + ln)
+            ok = False
+            continue
         out = proc.stdout or ""
         tail = [ln for ln in out.strip().splitlines() if ln.strip()]
         for ln in tail[-6:]:
