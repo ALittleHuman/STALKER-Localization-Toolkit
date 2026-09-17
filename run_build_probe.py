@@ -59,6 +59,14 @@ def skip(name, why=""):
     print("  SKIP %s%s" % (name, ("   <- " + why) if why else ""))
 
 
+# 由 run_ci 在 **fast 档**设置（用户裁定 2026-09-17，与 run_ui_smoke 的三档口径一致）：
+# 公开 CI 的 runner 没有真实交互桌面，"真窗口几何"类断言在那儿量不出有意义的值 ——
+# 实测 runner 上日志区 `winfo_height()` 只有 39px，而本机 150% DPI 下恒 > `px(60)`。
+# fast/local 档把它记 SKIP 并由 run_ci 记入「本次未覆盖」；**release 档不设这个变量
+# → 断言必须真跑真过**（发版前在本机仍然拦得住）。名字与 run_ci 里的字面量有防漂移锁。
+SKIP_GEOMETRY_ENV = "STALKER_SKIP_GUI_GEOMETRY"
+
+
 # ── 临时副本工具 ────────────────────────────────────────────
 # 版本号 / 标记 / 构建次数 / 标记序号现在都是 toolkit_base.py 里的模块级常量，
 # 因此"别动真文件"的唯一做法就是：把 `toolkit_version.BASE` 指到临时目录，在
@@ -1262,7 +1270,13 @@ def test_build_gui_construction():
                         "按钮没显示：%r" % (btn.cget("text"),)
             finally:
                 app.root.withdraw()
-        check("GUI：操作栏（开始构建…）在最小窗口下也不被切", _action_bar_never_cut)
+        if os.environ.get(SKIP_GEOMETRY_ENV):
+            # fast 档（公开 CI）：runner 上没有真实交互桌面，这条几何断言量不出有意义的值。
+            # 记 SKIP（不计 FAIL），原因印出来，并由 run_ci 记入「本次未覆盖」。
+            skip("GUI：操作栏（开始构建…）在最小窗口下也不被切",
+                 "GUI 真窗口几何在本机不可测（%s=1）" % SKIP_GEOMETRY_ENV)
+        else:
+            check("GUI：操作栏（开始构建…）在最小窗口下也不被切", _action_bar_never_cut)
 
         # 上面几条把标记切成了"手动"；后面还有预览/解析用例，先还原成"打开构建器
         # 时的样子"（自动模式 + 已保存值），免得几条用例互相影响。
@@ -1504,6 +1518,15 @@ def test_ci_gate_tiers():
             % rc.APP_PROBE_SKIP_MARK)
     check("run_ci：构造级探针的 SKIP 标识与 run_app_probe.py 一致（防漂移）",
           _app_probe_skip_mark_matches)
+
+    def _build_probe_geometry_env_matches():
+        src = open(os.path.join(BASE, "run_build_probe.py"), encoding="utf-8").read()
+        assert rc.BUILD_PROBE_SKIP_GEOMETRY_ENV in src, (
+            "run_ci 用 %r 让 fast 档跳过 GUI 真窗口几何断言，而 run_build_probe.py 里没有"
+            "这个字面量：两边一旦漂移，fast 档要么仍旧红、要么把断言静默跳过（覆盖消失）"
+            % rc.BUILD_PROBE_SKIP_GEOMETRY_ENV)
+    check("run_ci：构建探针的 GUI 几何跳过开关与 run_build_probe.py 一致（防漂移）",
+          _build_probe_geometry_env_matches)
 
     def _xv_env_matches():
         src = open(os.path.join(BASE, "cross_validate.py"), encoding="utf-8").read()

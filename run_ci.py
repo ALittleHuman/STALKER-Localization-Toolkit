@@ -84,6 +84,12 @@ UI_SMOKE_SKIP_MARK = "SKIP run_ui_smoke"
 # 探针在那之前只会"打印 SKIP"，run_ci 不认识这个标识 → release 档会把"整步被跳过"
 # 静默当通过（覆盖消失而 RESULT 仍 PASS），是比断言空转更危险的一种假绿。
 APP_PROBE_SKIP_MARK = "SKIP run_app_probe"
+# 构建探针里"GUI 真窗口几何"断言的开关：**只有 fast 档**由 run_ci 设上。
+# 公开 CI 的 runner 没有真实交互桌面，那几条几何断言量不出有意义的值（实测 runner 上
+# 日志区 winfo_height() 只有 39px，而本机 150% DPI 下恒 > px(60)）。设上后探针记 SKIP
+# 并印出原因，run_ci 再把它记入「本次未覆盖」；**release 档不设 → 断言必须真跑真过**。
+# 与 run_build_probe.py 里的字面量有防漂移锁（用户裁定 2026-09-17，与 run_ui_smoke 同口径）。
+BUILD_PROBE_SKIP_GEOMETRY_ENV = "STALKER_SKIP_GUI_GEOMETRY"
 # Qt 试点探针缺 PySide6/桌面时的自我标识（与 run_qt_pilot_probe.py 里的字面量必须一致）。
 QT_PILOT_SKIP_MARK = "SKIP run_qt_pilot_probe"
 # Qt 冻结产物探针缺 PyInstaller/PySide6 时的自我标识（与 run_qt_build_probe.py 一致）。
@@ -551,7 +557,15 @@ def main():
         print("  FAIL (run_build_probe.py 不在仓库里：门禁被删/改名了？)")
         ok = False
     else:
-        proc = subprocess.run([sys.executable, bp], cwd=HERE,
+        # 公开 CI 的 runner 没有真实交互桌面：让探针跳过"GUI 真窗口几何"那几条断言，
+        # 并把这处覆盖缺口显式记进「本次未覆盖」。local / release 档不设这个变量
+        # → 断言必须真跑真过（发版前仍拦得住）。
+        bp_env = dict(os.environ)
+        if mode == "fast":
+            bp_env[BUILD_PROBE_SKIP_GEOMETRY_ENV] = "1"
+            note_uncovered("run_build_probe（GUI 真窗口几何断言）",
+                           "--fast 档跳过（公开 CI 的 runner 无真实交互桌面）")
+        proc = subprocess.run([sys.executable, bp], cwd=HERE, env=bp_env,
                               capture_output=True, text=True, encoding="utf-8",
                               errors="replace", timeout=300)
         for ln in [x for x in (proc.stdout or "").strip().splitlines() if x.strip()][-5:]:
