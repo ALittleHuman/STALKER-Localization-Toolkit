@@ -16,7 +16,6 @@ Usage:
 import os
 import sys
 import tempfile
-import threading
 from pathlib import Path
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -26,13 +25,12 @@ for sub in ('file_system', 'font_pack', 'plugins'):
     if os.path.isdir(p) and p not in sys.path:
         sys.path.insert(0, p)
 
-from tkinterdnd2 import TkinterDnD
 import tkinter as tk
 from tkinter import ttk
 
 from toolkit import (
     T, color, apply_theme, apply_tk_defaults, PluginManager,
-    log_to_file, _BaseTk, load_user_theme,
+    log_to_file, _BaseTk,
 )
 from apps.font_pack_app import FontPackApp
 from apps.convert_app import ConvertApp
@@ -55,13 +53,13 @@ def check(name, cond, detail=''):
 
 
 def build_hub_tools(root):
-    shared_plugins = PluginManager(
+    # 与 Hub 完全一致：插件宿主用进程级共享实例，六个工具统一 factory(tab)
+    shared_plugins = PluginManager.shared(
         os.path.join(BASE, 'plugins'),
         log=lambda msg, tag='info': log_to_file(msg, tag),
     )
-    shared_plugins.scan()
     tools = [
-        ('文件系统', lambda tab: FSToolApp(tab, plugins=shared_plugins)),
+        ('文件系统', FSToolApp),
         ('编码转换', ConvertApp),
         ('文本提取', TextExtractApp),
         ('XML校对', XMLCompareApp),
@@ -84,8 +82,14 @@ def build_hub_tools(root):
 
 def main():
     print('=== UI smoke: build Hub tools ===')
-    root = _BaseTk()
-    root.withdraw()
+    # 需要桌面：无显示环境按 SKIP 处理（退出码 0），不伪装成失败。
+    # 与 run_app_probe 的处理一致，便于在无桌面的 CI 上安全运行。
+    try:
+        root = _BaseTk()
+        root.withdraw()
+    except Exception as e:
+        print('SKIP run_ui_smoke: 无法创建 Tk 根窗口（需要桌面环境）: %s' % e)
+        return 0
     root.configure(bg=T['bg'])
     apply_theme()
     apply_tk_defaults(root)
@@ -94,6 +98,37 @@ def main():
         '文件系统', '编码转换', '文本提取', 'XML校对', '视频转换', '汉化包生成'
     )))
     root.update_idletasks()
+
+    # 勾选框控件一致性：全仓另外三个勾选项（convert_app ×2、text_extract_app ×1）都是
+    # **经典 tk.Checkbutton**，配色统一走 toolkit_theme.apply_tk_defaults 的
+    # `*Checkbutton.*`；ttk.Checkbutton 走的是 TCheckbutton 样式，主题切换时
+    # refresh_theme 也不会命中（它按 winfo_class()=="Checkbutton" 分支刷新）。
+    # 所以这里钉住"完整西里尔"必须是 Checkbutton，且标签只留控件名。
+    print('=== UI: 汉化包生成 勾选框 ===')
+    fp_app = apps.get('汉化包生成')
+
+    def _find_var_widget(w, var_name):
+        for c in w.winfo_children():
+            try:
+                if str(c.cget('variable')) == var_name and \
+                        c.winfo_class() in ('Checkbutton', 'TCheckbutton'):
+                    return c
+            except Exception:
+                pass
+            found = _find_var_widget(c, var_name)
+            if found is not None:
+                return found
+        return None
+
+    cyr_cb = None
+    if fp_app is not None:
+        cyr_cb = _find_var_widget(fp_app.root, str(fp_app.cyr_var))
+    check('汉化包：完整西里尔勾选框是经典 tk.Checkbutton（与其他三处一致）',
+          cyr_cb is not None and cyr_cb.winfo_class() == 'Checkbutton',
+          '' if cyr_cb is None else cyr_cb.winfo_class())
+    check('汉化包：完整西里尔标签只留控件名（无括号说明）',
+          cyr_cb is not None and cyr_cb.cget('text') == '完整西里尔',
+          '' if cyr_cb is None else repr(cyr_cb.cget('text')))
 
     print('=== Core: encoding auto-detect ===')
     conv = apps.get('编码转换')

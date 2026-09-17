@@ -1,0 +1,20 @@
+# 行尾声明（2026-09-12 补齐：外部审计指出"CRLF/LF 混用且无声明"）。
+#
+# 仅 5 个文件是历史 CRLF，其余一律 LF。仓库当前没有 .git，本文件在入库后生效；
+# 此刻编辑器的行为由同目录 .editorconfig 负责（两份内容必须一致）。
+* text=auto eol=lf
+
+stalker_toolkit.py text eol=crlf
+toolkit_plugins.py text eol=crlf
+toolkit_textio.py text eol=crlf
+toolkit_widgets.py text eol=crlf
+font_pack/font_pack.py text eol=crlf
+
+# 历史产物 / 快照 / 二进制：不参与行尾规范化
+builds/** -text
+backup/** -text
+*.exe -text
+*.dll -text
+*.ico -text
+*.png -text
+*.b64 -text

@@ -9,12 +9,30 @@ jobs:
   core:
     runs-on: windows-latest
     timeout-minutes: 20
+    # runner 的控制台是 cp1252，而探针里有大量中文 print（本地是 GBK，同样不是 UTF-8）。
+    # run_ci.py 内部已对子进程兜底，这里再显式设一遍：换 runner / 换调用方式也不会再因为
+    # 编码把整轮闸门打断（2026-09-17 实测：8 个探针挂在 UnicodeEncodeError 上）。
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      # 这些是**质量闸门自己的依赖**，不是应用的依赖：
+      #   pyflakes —— 未定义名 / 未用导入；不装的话 run_ci 里那一步会 SKIP，
+      #               于是"没告警"和"没检查"看起来一样（曾是假绿）。
+      #   chardet  —— toolkit_textio.sniff_encoding 的统计探测；
+      #               不装的话相关断言会 SKIP。
+      # 后两个是**探针要构造的 App 会用到的可选依赖**：run_app_probe 要构造六个 App，
+      # 其中汉化包生成首次使用会自动 pip 装 Pillow、GUI 需要 tkinterdnd2。不预先装上的话
+      # 探针会走进"运行时自动安装"那条路 —— 2026-09-17 在 runner 上实测直接卡满 run_ci 的
+      # 600 秒超时（表现为 run_app_probe 挂死，与代码逻辑无关）。
+      - name: Install gate dependencies
+        run: python -m pip install --disable-pip-version-check pyflakes chardet pillow tkinterdnd2
 
       - name: Run automated regression
         shell: pwsh

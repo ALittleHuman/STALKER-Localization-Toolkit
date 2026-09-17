@@ -4,8 +4,8 @@ STALKER X-Ray 引擎文件格式库 v3
 支持 6 种 DB 格式 + sq_base 解密
 纯 Python 实现，零外部依赖
 """
-import struct, os, sys
-from typing import Optional, Callable
+import struct, os, sys, threading
+from typing import Optional
 
 # ═══════════════════════════════════════
 # LZHUF: (c)1989 Okumura, MIT-licensed port
@@ -232,14 +232,24 @@ def _load_dll():
     """Load embedded LZHUF DLL for exact engine compatibility."""
     import ctypes, os, tempfile
     try:
-        dll_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lzhuf_dll.dll")
+        here = os.path.dirname(os.path.abspath(__file__))
+        dll_path = os.path.join(here, "lzhuf_dll.dll")
         if not os.path.exists(dll_path):
+            # 模块目录没有 DLL 时回退到 %TEMP%。旧实现只判断"文件存在"就用，
+            # 一旦那里残留旧副本或损坏文件会被静默加载；现在与 .b64 逐字节比对，
+            # 不一致就覆盖。写入失败则由外层 except 兜底（退回纯 Python）。
+            import base64 as _b64
+            with open(os.path.join(here, "lzhuf_dll.b64"), "r", encoding="ascii") as _bf:
+                _data = _b64.b64decode(_bf.read().strip())
             dll_path = os.path.join(tempfile.gettempdir(), "lzhuf_dll.dll")
-            if not os.path.exists(dll_path):
-                import base64 as _b64
-                _b64_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lzhuf_dll.b64")
-                with open(_b64_path, "r", encoding="ascii") as _bf:
-                    _data = _b64.b64decode(_bf.read().strip())
+            _same = False
+            if os.path.exists(dll_path):
+                try:
+                    with open(dll_path, "rb") as _cf:
+                        _same = _cf.read() == _data
+                except OSError:
+                    _same = False
+            if not _same:
                 with open(dll_path, "wb") as f: f.write(_data)
         dll = ctypes.CDLL(dll_path)
         dll.lzhuf_decode.argtypes = [ctypes.POINTER(ctypes.c_ubyte), ctypes.c_int,
@@ -248,7 +258,6 @@ def _load_dll():
         dll.lzhuf_encode.argtypes = [ctypes.POINTER(ctypes.c_ubyte), ctypes.c_int,
                                       ctypes.POINTER(ctypes.c_ubyte), ctypes.c_int]
         dll.lzhuf_encode.restype = ctypes.c_int
-        _py_enc = lzhuf.encode
         _py_dec = lzhuf.decode
         def _enc(data):
             buf = (ctypes.c_ubyte * (len(data) * 2 + 32))()
@@ -267,6 +276,36 @@ def _load_dll():
         pass  # DLL not available, use pure Python fallback
 
 _load_dll()
+
+
+# ── 并发保护（妥协方案） ──────────────────────────────────────────
+# lzhuf 是进程级共享单例；DLL 内部也是 file-scope static 状态
+# （见 lzhuf_dll.c 的 freq/son/text_buf/src_data/... ），只要在后台线程里
+# 并发调用就会互相污染 —— 而 Hub 的封包/解包正跑在后台线程里。
+# 这里在单例上再包一层锁，把对共享实例的访问串行化：
+#   * 不需要改任何调用点（含 cross_validate.py 的直接调用）；
+#   * DLL 与纯 Python 两条路径都被覆盖；
+#   * 用 RLock 以防将来出现嵌套调用自锁。
+# 代价：LZHUF 调用串行化。单次 830 KB 编码约 127 ms，且 fs_app 已有
+# running 守卫使其天然串行，实际无感。
+# 彻底可重入需把 C 侧 static 收进上下文结构体重编 DLL —— 留待 2.0 重构。
+_lzhuf_lock = threading.RLock()
+_lzhuf_encode_raw = lzhuf.encode
+_lzhuf_decode_raw = lzhuf.decode
+
+
+def _lzhuf_encode_locked(data):
+    with _lzhuf_lock:
+        return _lzhuf_encode_raw(data)
+
+
+def _lzhuf_decode_locked(src):
+    with _lzhuf_lock:
+        return _lzhuf_decode_raw(src)
+
+
+lzhuf.encode = _lzhuf_encode_locked
+lzhuf.decode = _lzhuf_decode_locked
 
 
 
@@ -310,13 +349,27 @@ _scramblers = {"2947ru": _Scrambler("2947ru"), "2947ww": _Scrambler("2947ww")}
 # Chunk I/O
 # ═══════════════════════════════════════
 
-_CHUNK_COMP = 0x80000000
-_CHUNK_COMP_V2 = 0x00800000  # original SoC variant
-_COMP_MASK = 0x80800000  # either flag bit means compressed
+def _read_chunks(raw: bytes, fmt: str = None) -> dict:
+    """Read chunk headers: scan forward from offset 0 for DATA (id=0) and HEADER (id=1).
 
-def _read_chunks(raw: bytes) -> dict:
-    """Read chunk headers: scan forward from offset 0 for DATA (id=0) and HEADER (id=1)."""
+    `fmt` 已知时把它转给 `_validate_header`，用**字符集无关**的判据校验 HEADER 块
+    （见那里的说明）；不传则退化为原来的严格启发式（纯扫描场景）。
+
+    ★ 结构自洽优先（2026-09 修，D 类）：`_validate_header` 只要求"条目里**有一个**
+    像样"，而扫描是**逐字节**回退的（非 8 字节对齐的数据也要能认出来）。两者相加有个洞：
+    DATA 块的声明长度对不上文件时（截断/畸形），扫描会逐字节**走进载荷内部**，
+    载荷里任何一段"能解出至少一个像样路径"的字节都会被当成 HEADER 接受（fmt 已知时
+    判据还很松：不要求 ASCII）。于是**伪造的 HEADER 会赢过真的**，整包解出错误字节，
+    日志却显示成功。实测：`[DATA][伪造 HEADER][真 HEADER]` 这种文件改前解出的是
+    伪造条目的文件名。
+
+    现在把候选记下来，优先级是"与整份文件**结构自洽**"（所有非目录条目的
+    offset/size 落在文件内 —— 复用 auto_detect 用的同一个 `_entries_self_consistent`，
+    "结构像样"这件事只有一处定义）。一个自洽的候选都没有时，才退回第一个通过轻量
+    校验的候选：保持既有对畸形包的容忍度，不把"今天能解出来"的包变成解不出来。
+    """
     chunks = {}
+    fallback = None      # 第一个通过轻量校验、但与文件结构不自洽的候选
     pos = 0
     while pos + 8 <= len(raw):
         rid = struct.unpack_from("<I", raw, pos)[0]
@@ -326,25 +379,54 @@ def _read_chunks(raw: bytes) -> dict:
             comp = bool(rid & 0x80800000)
             data = raw[pos + 8:pos + 8 + sz]
             if cid == 0:
-                chunks[0] = (comp, data)
-            elif cid == 1:
-                if _validate_header(data, comp):
-                    chunks[1] = (comp, data)
-                    if 0 in chunks:
+                if 0 not in chunks:
+                    chunks[0] = (comp, data)
+            else:
+                entries = _validate_header(data, comp, fmt)
+                if entries is not None:
+                    if _entries_self_consistent(raw, entries):
+                        chunks[1] = (comp, data)
+                    elif fallback is None:
+                        fallback = (comp, data)
+                    if 0 in chunks and 1 in chunks:
                         return chunks  # both found
             pos += 8 + sz
         else:
             pos += 1  # skip one byte and retry (handles non-chunk-aligned data)
         if pos > len(raw) - 8:
             break
+    if 1 not in chunks and fallback is not None:
+        chunks[1] = fallback    # 没有一个自洽候选 → 维持旧的容忍度
     return chunks
 
 
-def _validate_header(hdr_data: bytes, comp: bool) -> bool:
-    """Try to parse header. Return True if valid entries found."""
-    for fmt in ("xdb", "2947ru", "2947ww", "2945", "2215", "11xx"):
+def _validate_header(hdr_data: bytes, comp: bool, fmt: str = None):
+    """Try to parse header. 返回解析出的**条目表**（list）；不像样则返回 None。
+
+    返回值从 bool 改成条目表（2026-09）：调用方 `_read_chunks` 需要拿这些条目再做
+    一次"是否与整份文件结构自洽"的判定，不能只拿到"有个条目像样"这个结论。
+
+    **判据分两种，取决于是否已知格式**（2026-09 修）：
+
+    * `fmt` 已知（`unpack_db` 的实际调用路径）：只要求"解出的条目里至少有一个像样的
+      文件路径"——像样 = 长度 ≥ 1、**不含控制字符**、`size_real` 在合理范围。
+      **不要求 ASCII**：归档里的文件名是 cp1251，西里尔文完全正常。
+    * `fmt` 未知（纯扫描）：保持原来的严格启发式（全 ASCII + 路径前 8 字节含字母），
+      因为那种场景需要更强的噪声抑制。
+
+    原实现只有严格那一套，于是**整包文件名都是西里尔文时会整个判失败**：
+    `_read_chunks` 不认 HEADER 块 → `unpack_db` 返回空列表。实测最小复现：
+    `pack_db([("имя_тест.txt", b"payload\\n", False)], "xdb")` 再 `unpack_db` → `[]`。
+    大包（如真实 45MB 俄文模组）因为有 ASCII 路径而"碰巧"过关，所以这个缺陷长期没暴露。
+    """
+    if fmt in FORMATS:
+        formats, strict = (fmt,), False
+    else:
+        formats = ("xdb", "2947ru", "2947ww", "2945", "2215", "11xx")
+        strict = True
+    for f in formats:
         try:
-            info = FORMATS[fmt]
+            info = FORMATS[f]
             data = hdr_data
             if comp:
                 if info["scrambler"]:
@@ -353,17 +435,25 @@ def _validate_header(hdr_data: bytes, comp: bool) -> bool:
             elif info["scrambler"]:
                 data = info["scrambler"].decrypt(data)
             entries = info["parse"](data)
-            if entries:
-                for e in entries:
-                    if not e["is_dir"]:
-                        if 0 <= e["size_real"] < 2000000000:
-                            p = e["path"]
-                            if len(p) >= 2 and all(32 <= ord(c) < 127 for c in p):
-                                if any(c.isalpha() for c in p[:min(8, len(p))]):
-                                    return True
+            if not entries:
+                continue
+            for e in entries:
+                if e["is_dir"]:
+                    continue
+                if not (0 <= e["size_real"] < 2000000000):
+                    continue
+                p = e["path"]
+                if len(p) < 1 or any(ord(c) < 32 for c in p):
+                    continue
+                if strict:
+                    if not all(ord(c) < 127 for c in p):
+                        continue
+                    if not any(c.isalpha() for c in p[:min(8, len(p))]):
+                        continue
+                return entries
         except Exception:
             continue
-    return False
+    return None
 
 
 # ═══════════════════════════════════════
@@ -445,14 +535,14 @@ FORMATS = {
     "2945": {
         "name": "2945 (Builds 2571-2945)", "key": "-2945",
         "scrambler": None, "pack": True,
-        "build_header": lambda files: _build_header_null(files, 4,
+        "build_header": lambda files: _build_header_null(files,
             lambda n, off, sz: _E_null4(n, 0, off, sz, sz)),
         "parse": lambda d: _fmt_null(d, 4, (0, 2, 3, 4, 2)),
     },
     "2215": {
         "name": "2215 (Builds 1482-2232)", "key": "-2215",
         "scrambler": None, "pack": True,
-        "build_header": lambda files: _build_header_null(files, 3,
+        "build_header": lambda files: _build_header_null(files,
             lambda n, off, sz: _E_null3(n, off, sz, sz)),
         "parse": lambda d: _fmt_null(d, 3, (0, 1, 2, 3, 1)),
     },
@@ -476,7 +566,13 @@ def _build_header_xdb(files: list) -> bytes:
     return h
 
 
-def _build_header_null(files: list, nf: int, entry_fn) -> bytes:
+def _build_header_null(files: list, entry_fn) -> bytes:
+    """null 系（2945 / 2215）的头部：布局完全由 entry_fn 决定。
+
+    原先还有一个 `nf`（字段数）形参，但**本函数从不用它** —— 两处调用分别传 4 / 3
+    只是为了与 parse 侧的 `_fmt_null(d, 4|3, ...)` 对称，属遗留参数（容易让人误以为
+    字段数会影响封包布局）。已删除；parse 侧仍需要字段数，那是它自己的参数。
+    """
     h = b""; off = 8
     for path, content, is_dir in files:
         if is_dir: h += entry_fn(path + "\\", 0, 0)
@@ -524,13 +620,41 @@ def _fmt_11xx(data: bytes) -> list:
 # Public API
 # ═══════════════════════════════════════
 
+# ── 格式名解析（唯一映射）────────────────────────────────────
+# GUI 下拉给用户看的是 ["name"]（"XDB (CS/CoP)"），引擎 API 收的是内部键（"xdb"）。
+# 两套名字若在**调用点**各自转换，就会出现 M6 那次事故：显示名直接送进 pack_db，
+# 6 个内置格式里 5 个抛 ValueError，剩下 1 个（"SquashFS"）被历史兼容分支静默按 xdb
+# 打包、文件名却是 .SquashFS.db。这里收敛成一处，任何调用方传名字或键都能工作。
+FMT_NAME_TO_KEY = {info["name"]: key for key, info in FORMATS.items()}
+
+
+def fmt_key(fmt):
+    """把「用户可见名 / 内部键」解析成 FORMATS 的内部键。
+
+    不是 DB 格式名的一律原样返回（"auto"、"sqfs"/"SquashFS"、插件格式名），
+    由调用方分派 —— 本函数不做语义决定，只做名字归一。
+    """
+    if not isinstance(fmt, str):
+        return fmt
+    if fmt in FORMATS:
+        return fmt
+    return FMT_NAME_TO_KEY.get(fmt, fmt)
+
+
 def pack_db(files: list, fmt: str = "xdb") -> bytes:
     """Pack files into a DB archive.
     files: [(path, data_bytes, is_dir), ...]
     Paths use '/' internally; engine format requires backslashes.
     Returns raw db bytes."""
-    if fmt in ("auto", "SquashFS", None) or fmt not in FORMATS:
+    if fmt in ("auto", "SquashFS", None):
+        # 这三个不是 DB 格式名：auto 对封包无意义、SquashFS 走 sqfs_pack，
+        # 历史上这里直接按 xdb 处理，保持兼容。
         fmt = "xdb"
+    if fmt not in FORMATS:
+        # 不再静默按 xdb 打包：插件格式名若因插件未加载而漏到这里，
+        # 以前会产出格式错误的包，现在显式报错（调用方已有 except 兜底并提示）。
+        raise ValueError("未知的封包格式: %r（可用: %s）"
+                         % (fmt, ", ".join(sorted(FORMATS))))
     files = [(p.replace("/", "\\"), c, d) for p, c, d in files]
     info = FORMATS[fmt]
     header = info["build_header"](files)
@@ -551,7 +675,7 @@ def unpack_db(raw: bytes, fmt: str = "xdb") -> list:
         if not fmt: return []
     info = FORMATS.get(fmt)
     if not info: return []
-    chunks = _read_chunks(raw)
+    chunks = _read_chunks(raw, fmt)
     if 1 not in chunks: return []
     comp, hdr = chunks[1]
     try:
@@ -567,16 +691,69 @@ def unpack_db(raw: bytes, fmt: str = "xdb") -> list:
         return []
 
 
+def _entries_fit_file(raw: bytes, entries: list) -> bool:
+    """条目表的**结构自洽**：每个非目录条目都必须真的落在文件内。
+
+    这是"这份条目表像不像真的"的**唯一**判据：`_entries_self_consistent`
+    （auto_detect 用）与 `_read_chunks`（拒伪造 HEADER 用）都走它 —— 两处各写一份
+    判据迟早会漂移成"auto 认、显式格式不认"这种自相矛盾。
+      * 路径非空且不含控制字符；
+      * offset > 0，且 offset + size_comp 落在文件内（压缩体不能越出文件）；
+      * size_real >= 0，压缩比不超过 MAX_LZO_RATIO。
+    注意**不要求 size_real > 0** —— 全空文件的归档（真实包里很常见）必须仍能识别。
+    """
+    for e in entries:
+        if e.get("is_dir"):
+            continue
+        p = e.get("path") or ""
+        if not p or any(ord(c) < 32 for c in p):
+            return False
+        off = e.get("offset") or 0
+        sc = e.get("size_comp")
+        if sc is None:
+            sc = e.get("size_real") or 0
+        sr = e.get("size_real") or 0
+        if off <= 0 or off + sc > len(raw) or sr < 0:
+            return False
+        if sc and sr > sc * MAX_LZO_RATIO:
+            return False
+    return True
+
+
+def _entries_self_consistent(raw: bytes, entries: list) -> bool:
+    """整份条目表是否自洽，且**至少有一个非目录条目**（auto_detect 的判据）。
+
+    只看"有一个条目像样"是不够的：2215/11xx 的数据按 2945 的布局解析也能解出一堆
+    "看起来像样"的条目，于是默认的 auto 模式会静默选错格式、解出**错误字节**。
+    结构判据本体在 `_entries_fit_file`；这里额外要求至少一个文件条目
+    （纯目录归档在 `_validate_header` 那一步就已经不算"像样"了）。
+    """
+    if not entries:
+        return False
+    if not _entries_fit_file(raw, entries):
+        return False
+    return any(not e.get("is_dir") for e in entries)
+
+
 def auto_detect(raw: bytes) -> Optional[str]:
-    """Try all formats, return first one that produces valid entries."""
-    order = ["2947ru", "2947ww", "xdb", "2945", "11xx", "2215"]
-    for fmt in order:
-        entries = unpack_db(raw, fmt)
-        if entries:
-            for e in entries:
-                if not e["is_dir"] and 0 < e["offset"] < len(raw) and e["size_real"] > 0:
-                    return fmt
-    return None
+    """按**自洽性**判定格式；唯一自洽才返回，歧义返回 None。
+
+    旧实现是"第一个能解析出条目的格式赢"（硬编码顺序表），审计实测：
+      2215 → 2945（错）  11xx → 2945（错）  全空文件归档 → None（错）
+    —— 而 `auto` 正是 fs_app 的**默认**模式，于是用户拿到错误字节、日志却显示"解析成功"。
+    新判据下每种格式的产物只有一个自洽候选（实测 6×6 矩阵），只有 11xx/2215 这对
+    布局同源的会产生两个候选 —— 那时返回 None，让用户**显式选**，而不是静默给错。
+    顺序表从 FORMATS 派生，避免与格式表两处维护。
+    """
+    hits = []
+    for fmt in FORMATS:
+        try:
+            entries = unpack_db(raw, fmt)
+        except Exception:
+            continue
+        if _entries_self_consistent(raw, entries):
+            hits.append(fmt)
+    return hits[0] if len(hits) == 1 else None
 
 
 def load_db(path: str) -> bytes:
@@ -587,21 +764,41 @@ def load_db(path: str) -> bytes:
         return f.read()
 
 
+# 解压侧的两个硬上限（判据见 extract_file 里的注释）：
+#   * 单个条目解压后的**绝对**上限 —— 本地化工具里的单文件远小于此；
+#   * 允许的**最大压缩比** —— 正常 LZO 远低于此，"极小压缩体 + 极大声明尺寸"就是解压炸弹。
+MAX_DECOMPRESS_BYTES = 512 * 1024 * 1024
+MAX_LZO_RATIO = 1024
+
+
 def lzo1x_decompress(src: bytes, out_len: int = None) -> bytes:
     """LZO1X-1 解压 (minilzo lzo1x_decompress 直译)。
     out_len (size_real) 用于截断结尾无 eof 标记的 LZO 数据。
     结构必须是双循环: 外层 while (字面量 run) + 内层 match_loop (连续匹配),
-    否则无法区分 t<16 的 M1 短匹配和外层字面量 run。"""
+    否则无法区分 t<16 的 M1 短匹配和外层字面量 run。
+
+    **畸形流返回 None**（不是抛 IndexError、也不给部分数据）：调用方
+    `extract_file` 的契约本来就是 Optional[bytes]，两者一致。
+    """
     M2_MAX_OFFSET = 0x0800
     n = len(src)
     if n == 0:
         return b""
     out = bytearray()
     ip = 0
+    bad = False            # 流畸形标记（cpm 里 nonlocal 置位）
 
     def cpm(m_pos, count):
+        nonlocal bad
         for _ in range(count):
             if out_len is not None and len(out) >= out_len:
+                return
+            # ★ 下标必须校验：m_pos 由**流内数据**算出，畸形流可以给出负值或越界值。
+            #   负下标在 Python 里会静默读 out 的尾部字节（不报错、产出错数据）；
+            #   越界则抛 IndexError 逃出引擎 API（调用方看到的是 Python 内部异常）。
+            #   两种都必须在这里挡住，并标记整条流畸形。
+            if m_pos < 0 or m_pos >= len(out):
+                bad = True
                 return
             out.append(out[m_pos])
             m_pos += 1
@@ -688,6 +885,12 @@ def lzo1x_decompress(src: bytes, out_len: int = None) -> bytes:
             if t >= 16:
                 match_loop(t)
             else:
+                # ★ 这里必须补边界检查：上面 807 行已经把 ip 推到 n，而 M1 短匹配
+                #   还要再读一个字节（src[ip]）才能算出 m_pos。畸形/截断输入下
+                #   这就是"越界读抛 IndexError 逃出引擎 API"的最后一条路径
+                #   （随机 fuzz 实测：长度 154 的输入触发）。
+                if ip >= n:
+                    return bytes(out)
                 m_pos = len(out) - (1 + M2_MAX_OFFSET) - (t >> 2) - (src[ip] << 2)
                 ip += 1
                 cpm(m_pos, 3)
@@ -735,6 +938,8 @@ def lzo1x_decompress(src: bytes, out_len: int = None) -> bytes:
                 t = src[ip]; ip += 1
                 match_loop(t)
 
+    if bad:
+        return None        # 流畸形：宁可不给数据，也不给错数据
     if out_len is not None:
         return bytes(out[:out_len])
     return bytes(out)
@@ -754,17 +959,50 @@ def extract_file(raw: bytes, entry: dict) -> Optional[bytes]:
     sc = entry.get("size_comp") or entry["size_real"]
     data = raw[entry["offset"]:entry["offset"] + sc]
     if sc != entry["size_real"]:
+        # ★ 声明尺寸（size_real）是**不可信的归档头字段**，而解压会按它分配内存：
+        #   一个几 KB 的构造包可以让 bytearray 涨到 GB 级。两条判据都过才算可信：
+        #     ① 绝对上限：单文件解压后不得超过 MAX_DECOMPRESS_BYTES；
+        #     ② 压缩比：不得超过 MAX_LZO_RATIO（"极小压缩体 + 极大声明尺寸"＝炸弹）。
+        #   任一不过就返回 None —— 宁可不给数据，也不把内存交出去。
+        if (entry["size_real"] < 0
+                or entry["size_real"] > MAX_DECOMPRESS_BYTES
+                or (sc > 0 and entry["size_real"] > sc * MAX_LZO_RATIO)):
+            return None
         data = lzo1x_decompress(data, out_len=entry["size_real"])
     return data
 
 
+def write_extracted_file(dest: str, data) -> bool:
+    """把 `extract_file` 的结果落盘；返回是否写出。
+
+    **data == b"" 是合法的空文件**（真实包里 0 字节占位文件很常见），必须写出一个
+    0 字节文件；只有 `None` 才是"解不出来"。历史调用方写的是 `if not data:`，于是
+    空文件被计入失败、解包后文件直接消失 —— 属正常场景的数据缺失（不是异常）。
+    抽成独立函数是为了让探针**不需要 GUI** 就能钉住这个三态语义。
+    """
+    if data is None:
+        return False
+    try:
+        d = os.path.dirname(dest)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(dest, "wb") as f:
+            f.write(data)
+    except OSError:
+        return False
+    return True
+
+
 def sqfs_check(path: str) -> str:
-    """Classify an .sq file: 'sqfs' (plain), 'nlc' (encrypted ZZZZ), or 'unknown'."""
+    """Classify an .sq file: 'sqfs' (plain), 'encrypted' (needs a plugin decryptor), or 'unknown'.
+
+    注意：返回的类别**不携带任何模组名**——由哪个插件解密由插件自己声明。
+    """
     if not os.path.exists(path): return "unknown"
     with open(path, "rb") as f:
         magic = f.read(4)
     if magic in (b"hsqs", b"sqsh"): return "sqfs"
-    if magic == b"ZZZZ": return "nlc"
+    if magic == b"ZZZZ": return "encrypted"
     return "unknown"
 
 
@@ -803,21 +1041,241 @@ def _find_sqfs_tool():
             return c
     return None
 
+# ══════════════════════════════════════════════════════════════════════════
+# SquashFS 元数据直读（2026-09-17，用户拍板的"选项 B"：不再依赖 sqfs2tar）
+#
+# 为什么自己做：`sqfs2tar` 被 360 按**哈希**拦（`Access is denied`，复制改名也没用），
+# 而它是原来**唯一**能拿到"精确文件大小"的路子；rdsquashfs 三条路都拿不到
+# （`--describe` 无大小 / `--list` 给人读单位 `4k` / `--stat` 一文件一进程 71.6ms），
+# `sqfsdiff` 只报"哪个路径多了"。
+# 顺带把"读取慢"一起解决：真实镜像（明文 hsqs + LZ4 + 128KB 块）
+# 用这套读元数据是 **0.01~0.02s**，而 sqfs2tar 要 **54~99s**。
+#
+# 三个必须记住的格式坑（都是实测踩出来的）：
+#   ① 元数据块的 **2 字节头在块起始处**；头 bit15=未压缩、低 15 位=压缩长度；
+#   ② 跨块前进**不能按 8192**（那只是解压后大小）—— 必须 `块起始 + 2 + 压缩长度`；
+#   ③ **不许对打包 ref 做算术**（`ref + 16`）：真实镜像里 inode 会**跨元数据块**
+#      （实测 sq_levels 起点 8180 + 16 = 8196 > 8192）→ 必须用能跨块的游标。
+# ══════════════════════════════════════════════════════════════════════════
 
-def cleanup_sqfs_tools():
-    """No-op; kept for interface compatibility (tools are used in place)."""
-    pass
+_SQFS_MAGIC = b"hsqs"
+_SQFS_SB_SIZE = 96
+_SQFS_T_DIR, _SQFS_T_FILE = 1, 2
+_SQFS_T_SLINK = 3
+_SQFS_T_DIR_X, _SQFS_T_FILE_X, _SQFS_T_SLINK_X = 8, 9, 10
+
+sqfs_last_error = None          # 最近一次 sqfs_list 取大小的失败原因（UI 要显示出来）
+sqfs_extract_last_error = None  # 最近一次 sqfs_extract 的失败原因（"返回 0"必须能说出为什么）
+
+
+def _sqfs_lz4_block(src):
+    """LZ4 **块**格式（squashfs 用的就是它，没有帧头）。"""
+    out = bytearray()
+    i, n = 0, len(src)
+    while i < n:
+        token = src[i]; i += 1
+        lit = token >> 4
+        if lit == 15:
+            while True:
+                b = src[i]; i += 1
+                lit += b
+                if b != 255:
+                    break
+        out += src[i:i + lit]; i += lit
+        if i >= n:
+            break                       # 最后一组只有字面量
+        offset = src[i] | (src[i + 1] << 8); i += 2
+        mlen = token & 0x0F
+        if mlen == 15:
+            while True:
+                b = src[i]; i += 1
+                mlen += b
+                if b != 255:
+                    break
+        mlen += 4
+        start = len(out) - offset
+        if offset == 0 or start < 0:
+            raise ValueError("LZ4 块损坏（offset=%d）" % offset)
+        for k in range(mlen):
+            out.append(out[start + k])
+    return bytes(out)
+
+
+def _sqfs_decompress(comp, raw):
+    if comp == 1:
+        import zlib
+        return zlib.decompress(raw)
+    if comp == 4:
+        import lzma
+        return lzma.LZMADecompressor(format=lzma.FORMAT_XZ).decompress(raw)
+    if comp == 6:
+        from compression import zstd
+        return zstd.decompress(raw)
+    if comp == 5:
+        return _sqfs_lz4_block(raw)
+    raise ValueError("暂不支持的压缩 id=%d（lzo 无标准库实现）" % comp)
+
+
+class _SqfsMeta:
+    """元数据表读取器（inode 表 / 目录表通用）：按 2 字节头逐块读，可跨块。"""
+
+    def __init__(self, fh, base, comp):
+        self.fh, self.base, self.comp = fh, base, comp
+        self.cache = {}
+
+    def blk(self, start):
+        hit = self.cache.get(start)
+        if hit is not None:
+            return hit
+        self.fh.seek(self.base + start)
+        head = self.fh.read(2)
+        if len(head) < 2:
+            raise ValueError("元数据块越界（%d）" % start)
+        hdr = int.from_bytes(head, "little")
+        comp_size, stored = hdr & 0x7FFF, bool(hdr & 0x8000)
+        raw = self.fh.read(comp_size)
+        if len(raw) != comp_size:
+            raise ValueError("元数据块截断（%d）" % start)
+        data = raw if stored else _sqfs_decompress(self.comp, raw)
+        nxt = start + 2 + comp_size
+        self.cache[start] = (data, nxt)
+        return data, nxt
+
+
+class _SqfsCur:
+    """元数据游标：跨块连续读；**不**对打包 ref 做算术。"""
+
+    def __init__(self, meta, ref=None, block=None, off=None):
+        self.m = meta
+        if ref is not None:
+            self.block, self.off = ref >> 16, ref & 0xFFFF
+        else:
+            self.block, self.off = block, off
+
+    def read(self, n):
+        out = b""
+        while n > 0:
+            data, nxt = self.m.blk(self.block)
+            if self.off >= len(data):
+                self.block, self.off = nxt, 0
+                continue
+            take = min(n, len(data) - self.off)
+            out += data[self.off:self.off + take]
+            self.off += take
+            n -= take
+            if self.off >= len(data):
+                self.block, self.off = nxt, 0
+        return out
+
+
+def _sqfs_read_inode(mt, ref):
+    """返回 (类型, 文件大小, 目录起始块, 目录块内偏移)。"""
+    c = _SqfsCur(mt, ref=ref)
+    itype = int.from_bytes(c.read(2), "little")
+    c.read(14)                                    # perm/uid/gid/mtime/inode_number
+    if itype == _SQFS_T_DIR:
+        sb = int.from_bytes(c.read(4), "little")
+        c.read(4)                                 # nlink
+        fsize = int.from_bytes(c.read(2), "little")
+        boff = int.from_bytes(c.read(2), "little")
+        c.read(4)                                 # parent
+        return itype, fsize, sb, boff
+    if itype == _SQFS_T_DIR_X:
+        c.read(4)                                 # nlink
+        fsize = int.from_bytes(c.read(4), "little")
+        sb = int.from_bytes(c.read(4), "little")
+        c.read(4)                                 # parent
+        c.read(2)                                 # i_count
+        boff = int.from_bytes(c.read(2), "little")
+        return itype, fsize, sb, boff
+    if itype == _SQFS_T_FILE:
+        c.read(8)                                 # blocks_start + fragment
+        c.read(4)                                 # block_offset
+        fsize = int.from_bytes(c.read(4), "little")
+        return itype, fsize, None, None
+    if itype == _SQFS_T_FILE_X:
+        c.read(8)                                 # blocks_start
+        fsize = int.from_bytes(c.read(8), "little")
+        return itype, fsize, None, None
+    if itype in (_SQFS_T_SLINK, _SQFS_T_SLINK_X):
+        c.read(4)                                 # nlink
+        return itype, int.from_bytes(c.read(4), "little"), None, None
+    return itype, 0, None, None
+
+
+def _sqfs_walk_sizes(fh, sb):
+    """走目录表，返回 {路径: 大小}（目录不计）。"""
+    mt_i = _SqfsMeta(fh, sb["inode_table"], sb["compression"])
+    mt_d = _SqfsMeta(fh, sb["dir_table"], sb["compression"])
+    sizes = {}
+    stack = [(sb["root_ref"], "")]
+    while stack:
+        ref, path = stack.pop()
+        itype, size, sblock, boff = _sqfs_read_inode(mt_i, ref)
+        if itype not in (_SQFS_T_DIR, _SQFS_T_DIR_X):
+            continue
+        data = _SqfsCur(mt_d, block=sblock, off=boff).read(size) if size else b""
+        i = 0
+        while i + 12 <= len(data):
+            count = int.from_bytes(data[i:i + 4], "little")
+            sblk = int.from_bytes(data[i + 4:i + 8], "little")
+            i += 12
+            for _k in range(count + 1):
+                if i + 8 > len(data):
+                    break
+                e_off = int.from_bytes(data[i:i + 2], "little")
+                e_type = int.from_bytes(data[i + 4:i + 6], "little")
+                nsz = int.from_bytes(data[i + 6:i + 8], "little") + 1
+                i += 8
+                name = data[i:i + nsz].decode("utf-8", "replace")
+                i += nsz
+                if e_type == 0:                  # 该组的"下一组"哨兵
+                    break
+                child = (path + "/" + name) if path else name
+                child_ref = (sblk << 16) | e_off
+                if e_type in (_SQFS_T_DIR, _SQFS_T_DIR_X):
+                    stack.append((child_ref, child))
+                else:
+                    _, csize, _, _ = _sqfs_read_inode(mt_i, child_ref)
+                    sizes[child] = csize
+    return sizes
+
+
+def _sqfs_meta_sizes(path):
+    """纯 Python 取精确文件大小：{路径: 字节数}。失败抛异常（调用方兜住）。"""
+    with open(path, "rb") as fh:
+        head = fh.read(_SQFS_SB_SIZE)
+        if head[:4] != _SQFS_MAGIC:
+            raise ValueError("不是明文 SquashFS 镜像")
+        import struct as _struct
+        (_inodes, _mk, _bs, _frags, comp, _blog, _flags, _ids, _vmaj, _vmin,
+         root_ref, _used, _idtab, _xtab, inode_table, dir_table, _ftab) = \
+            _struct.unpack_from("<IIIIHHHHHHQQQQQQQ", head, 4)
+        sb = dict(compression=comp, root_ref=root_ref,
+                  inode_table=inode_table, dir_table=dir_table)
+        return _sqfs_walk_sizes(fh, sb)
 
 
 def sqfs_list(path: str) -> Optional[list]:
     """List entries in a PLAIN SquashFS image, with real file sizes.
-    Structure via rdsquashfs --describe; sizes via sqfs2tar (one pass)."""
-    import subprocess, io, tarfile
+    Structure via `rdsquashfs --describe`; sizes via **纯 Python 读元数据**
+    (`_sqfs_meta_sizes`) —— 不经过任何"把整包流一遍"的外部工具。"""
+    import subprocess
     if sqfs_check(path) != "sqfs": return None
     tool = _find_sqfs_tool()
     if not tool or not tool.endswith("rdsquashfs.exe"): return None
     try:
-        r = subprocess.run([tool, "--describe", path], capture_output=True, text=True, timeout=30,
+        # ★ 必须显式给编码（2026-09-14 实测修）：`text=True` 不指定编码时 Python 用
+        #   **平台默认**（本机 GBK）解码子进程输出 —— 而镜像里的路径含**非 GBK 字节**
+        #   （俄文/中文条目）时，读取线程直接抛 UnicodeDecodeError 崩掉，`r.stdout`
+        #   变成 None，于是 `sqfs_list` 返回 None、工具报"镜像损坏或缺 rdsquashfs"。
+        #   实测：`gamedata.sq_meshes`（1.96 GB）整包因此被判损坏，而同一镜像用
+        #   utf-8 + errors="replace" 0.07s 就列出 4104 项。路径名是**不可信输入**，
+        #   解码只求不炸（坏字节变 '?'），判定与提取都不依赖它的精确字节。
+        #   ★ 写成**字面关键字**而不是 `**dict`：探针有一条 AST 锁扫"text=True 必须
+        #     同时给 encoding="（`**kwargs` 它看不见，等于给这条锁留洞）。
+        r = subprocess.run([tool, "--describe", path], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=30,
                            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
         if r.returncode != 0: return None
         entries = []
@@ -835,20 +1293,15 @@ def sqfs_list(path: str) -> Optional[list]:
             p = p.replace("\\", "/")
             entries.append({"path": p, "size_real": 0,
                             "is_dir": (etype == "dir"), "offset": 0})
-        # Sizes: one sqfs2tar pass
-        base = os.path.dirname(tool)
-        t2t = os.path.join(base, "sqfs2tar.exe")
+        # Sizes: **纯 Python 读元数据**（2026-09-17：不再用 sqfs2tar —— 它被 360
+        # 按哈希拦、且慢 3000 倍；真实镜像实测 0.01~0.02s vs 54~99s）
+        global sqfs_last_error
         sizes = {}
-        if os.path.exists(t2t):
-            try:
-                r2 = subprocess.run([t2t, path], capture_output=True, timeout=120,
-                                   creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-                if r2.returncode == 0:
-                    tar = tarfile.open(fileobj=io.BytesIO(r2.stdout))
-                    for m in tar.getmembers():
-                        sizes[m.name.replace("\\", "/")] = m.size
-            except Exception:
-                pass
+        try:
+            sizes = _sqfs_meta_sizes(path)
+            sqfs_last_error = None
+        except Exception as e:                    # 取不到就**如实报出来**，不静默 0 B
+            sqfs_last_error = "%s: %s" % (type(e).__name__, e)
         for e in entries:
             if not e["is_dir"] and e["path"] in sizes:
                 e["size_real"] = sizes[e["path"]]
@@ -857,58 +1310,136 @@ def sqfs_list(path: str) -> Optional[list]:
         return None
 
 
+def safe_out_path(out_dir, rel):
+    """把归档内的相对路径安全地拼到 out_dir 下；**判断为不安全就返回 None**。
+
+    归档条目名是**不可信输入** —— 本工具的主要入口就是"打开从网上拿到的 mod 包"：
+    `..`、绝对路径、`C:` 盘符、UNC、以及 `a/../../../x` 都能逃出输出目录，而落盘是
+    `open(p, "wb")` 直接覆盖既有文件，等于**任意文件写**。原先 sqfs 批量分支里那句
+    `lstrip("./")` 只能挡前导 `../`，`a/../../../x` 照样逃逸。
+
+    判据不只看有没有 `..`，而是**再用 os.path.commonpath 复核**（Windows 下大小写
+    不敏感）：这样盘符、UNC、以及任何形式的逃逸都一并能挡住。
+    """
+    if not rel or not isinstance(rel, str):
+        return None
+    rel = rel.replace("\\", "/")
+    if rel.startswith("/"):
+        return None                                  # 绝对路径 / UNC
+    if len(rel) >= 2 and rel[1] == ":":
+        return None                                  # 盘符（C:...）
+    parts = [p for p in rel.split("/") if p not in ("", ".")]
+    if not parts or any(p == ".." for p in parts):
+        return None
+    root = os.path.abspath(out_dir)
+    try:
+        p = os.path.abspath(os.path.join(root, *parts))
+        if os.path.normcase(os.path.commonpath([root, p])) != os.path.normcase(root):
+            return None                              # 兜底复核（含跨盘符 ValueError）
+    except (ValueError, OSError):
+        return None
+    return p
+
+
+def _sqfs_failure_note(failed, count):
+    """把"哪些项失败、为什么"压成一行（最多列 3 项）—— 只报"返回 0"用户无从判断。"""
+    return "%d/%d 项失败：%s%s" % (
+        len(failed), count + len(failed),
+        "；".join(failed[:3]), "…" if len(failed) > 3 else "")
+
+
+def _quiet_unlink(path):
+    """尽力删掉临时文件：不存在、被占用都不抛。"""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+_SQFS_CAT_TIMEOUT = 300      # 单个文件的 --cat 上限（秒）：只读一个文件，不该久等
+
+
 def sqfs_extract(path: str, out_dir: str, files: list = None) -> int:
     """Extract from a PLAIN SquashFS image. files: list of dicts with path.
-    If files is None, extracts everything. Returns count."""
+    If files is None, extracts everything. Returns count.
+
+    ★ 选中集**逐个 `rdsquashfs --cat`**（2026-09-17 修，进 BETA 的那条"解包失败返回 0"）。
+      原先"勾 >8 个"走一次 `sqfs2tar`，并把**整包 tar 收进内存**（`capture_output=True`）。
+      真实镜像 `gamedata.sq_textures`（8.3GB）实测：同一命令把输出写文件是 339MB/s
+      （整镜像 23s），改成收进内存后 **90s 仍在跑、已缓冲 8.49GB**；用户现场正好卡在
+      `timeout=600`（日志 16:12:33 → 16:22:33 = 600.04s），`TimeoutExpired` 被外层
+      `except Exception` 吞掉 → 返回 0 —— **逐个 --cat 的回退根本没跑**。逐条实测
+      0.032s/个（1094 项 ≈ 35s），既不吞内存，也没有那个 600s 上限。
+      同一条分支还有第二个错：`if r.returncode == 0 and r.stdout` 把**空文件**当成
+      "解不出来"（空文件是合法条目）—— 现在 `rc == 0` 就算出来了（照写 0 字节）。
+    整镜像（files is None）仍走一次 `--unpack-path`：那条路**不加 capture_output**，
+    输出直接由外部工具落盘，不存在"整包收进内存"。
+    """
     import subprocess
-    if sqfs_check(path) != "sqfs": return 0
-    tool = _find_sqfs_tool()
-    if not tool: return 0
-    try:
-        if files:
-            wanted = {f["path"].replace("\\", "/").lstrip("./") for f in files if not f.get("is_dir")}
-            if len(wanted) > 8:
-                # 批量导出：一次 sqfs2tar 比逐个 rdsquashfs --cat 快得多。
-                import io as _io
-                import tarfile as _tarfile
-                base = os.path.dirname(tool)
-                t2t = os.path.join(base, "sqfs2tar.exe")
-                if os.path.exists(t2t):
-                    r = subprocess.run([t2t, path], capture_output=True, timeout=600,
-                                       creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-                    if r.returncode == 0:
-                        count = 0
-                        with _tarfile.open(fileobj=_io.BytesIO(r.stdout)) as tar:
-                            for m in tar:
-                                name = m.name.replace("\\", "/").lstrip("./")
-                                if name in wanted and m.isfile():
-                                    p = os.path.join(out_dir, name.replace("/", os.sep))
-                                    os.makedirs(os.path.dirname(p), exist_ok=True)
-                                    src = tar.extractfile(m)
-                                    if src is not None:
-                                        with open(p, "wb") as fh:
-                                            fh.write(src.read())
-                                        count += 1
-                        return count
-            count = 0
-            for f in files:
-                if f.get("is_dir"): continue
-                r = subprocess.run([tool, "--cat", f["path"], path],
-                                   capture_output=True, timeout=60,
-                                   creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-                if r.returncode == 0 and r.stdout:
-                    p = os.path.join(out_dir, f["path"].replace("/", os.sep))
-                    os.makedirs(os.path.dirname(p), exist_ok=True)
-                    with open(p, "wb") as fh: fh.write(r.stdout)
-                    count += 1
-            return count
-        else:
-            r = subprocess.run([tool, "--unpack-path", "/", "-p", out_dir, path],
-                               capture_output=True, text=True, timeout=300,
-                               creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-            return -1 if r.returncode == 0 else 0
-    except Exception:
+    global sqfs_extract_last_error
+    sqfs_extract_last_error = None
+    if sqfs_check(path) != "sqfs":
+        sqfs_extract_last_error = "不是明文 SquashFS 镜像"
         return 0
+    tool = _find_sqfs_tool()
+    if not tool:
+        sqfs_extract_last_error = "找不到 rdsquashfs.exe（deps 不完整）"
+        return 0
+    cf = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    if not files:
+        try:
+            r = subprocess.run([tool, "--unpack-path", "/", "-p", out_dir, path],
+                               capture_output=True, text=True, timeout=3600,
+                               encoding="utf-8", errors="replace", creationflags=cf)
+        except Exception as e:
+            sqfs_extract_last_error = "%s: %s" % (type(e).__name__, e)
+            return 0
+        if r.returncode != 0:
+            sqfs_extract_last_error = ("rdsquashfs --unpack-path 返回 %d：%s"
+                                       % (r.returncode, (r.stderr or "").strip()[:300]))
+            return 0
+        return -1
+    count, failed = 0, []
+    for f in files:
+        if f.get("is_dir"):
+            continue
+        rel = f["path"]
+        # 归档内路径**不可信**：逃逸条目一律拒绝（这条判据在原来的 tar 分支里是另写一份，
+        # 现在逐条都过 safe_out_path）。
+        p = safe_out_path(out_dir, rel)
+        if p is None:
+            failed.append("%s：路径越界，拒绝写出" % rel)
+            continue
+        # 先写同目录的临时文件、**成功后才 replace**：外部工具失败时可能已经写了半截，
+        # 直接落盘就等于把既有文件静默损坏（工程里其他写入路径也都是原子写）。
+        tmp = p + ".part"
+        try:
+            d = os.path.dirname(p)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            # stdout 直接接文件句柄（不是 capture_output）：单文件再大也只过磁盘不过内存
+            with open(tmp, "wb") as fh:
+                r = subprocess.run([tool, "--cat", rel, path], stdout=fh,
+                                   stderr=subprocess.PIPE, timeout=_SQFS_CAT_TIMEOUT,
+                                   creationflags=cf)
+        except Exception as e:               # 单项失败**只算这一项**，不再炸掉整批
+            _quiet_unlink(tmp)
+            failed.append("%s：%s: %s" % (rel, type(e).__name__, e))
+            continue
+        if r.returncode != 0:
+            _quiet_unlink(tmp)
+            failed.append("%s：rdsquashfs --cat 返回 %d" % (rel, r.returncode))
+            continue
+        try:
+            os.replace(tmp, p)
+        except OSError as e:
+            _quiet_unlink(tmp)
+            failed.append("%s：写入失败 %s" % (rel, e))
+            continue
+        count += 1
+    if failed:
+        sqfs_extract_last_error = _sqfs_failure_note(failed, count)
+    return count
 
 
 def sqfs_pack(files: list, out_path: str) -> bool:

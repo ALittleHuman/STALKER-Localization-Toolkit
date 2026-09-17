@@ -1,0 +1,37 @@
+# 行尾与编码声明（2026-09-12 补齐：外部审计指出"CRLF/LF 混用且无任何声明"）。
+#
+# 本仓库当前**不是 git 工作树**（没有 .git），所以 .gitattributes 此刻不生效 ——
+# 编辑器只认 .editorconfig。两份都放，是为了"现在能用"与"将来入库时有效"。
+#
+# 现实约定（实测 2026-09-12：41 个 .py 中 5 个纯 CRLF、其余纯 LF，无一处混合）：
+#   * 下列 5 个文件是**历史 CRLF**，逐文件保持，不要顺手改成 LF（会产生整文件 diff）；
+#   * 其余一律 LF。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = false
+
+[stalker_toolkit.py]
+end_of_line = crlf
+
+[toolkit_plugins.py]
+end_of_line = crlf
+
+[toolkit_textio.py]
+end_of_line = crlf
+
+[toolkit_widgets.py]
+end_of_line = crlf
+
+[font_pack/font_pack.py]
+end_of_line = crlf
+
+# 历史产物与快照：不参与行尾规范化（它们是"当时就是这样"的留档）
+[builds/**]
+end_of_line = unset
+
+[backup/**]
+end_of_line = unset
