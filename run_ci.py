@@ -9,6 +9,8 @@ Runs automated checks. 各档跑什么：
     * 六个探针（ext / app / functional / build / hub / engine_compat）+ 静态守卫 —— 三档都跑
     * cross_validate.py（需外部 converter.exe）—— fast 档跳过，其余按档位记 SKIP 或 FAIL
     * run_ui_smoke.py（需桌面会话）—— fast 档跳过，其余按档位记 SKIP 或 FAIL
+    * run_app_probe.py（需桌面 Tk）—— 三档都跑；探针自报"无桌面 Tk"的 SKIP 时，
+      按档位记 SKIP（fast/local）或 FAIL（release）—— 缺前提**不会**被静默读成通过
     * cleanup: __pycache__, temp/*, cross_validate_out
 
 Usage:
@@ -77,6 +79,11 @@ CONVERTER_DEFAULT = (r"E:\Software\Games\STALKER\Localization\Tools\Tool"
 # run_ui_smoke 无桌面时的自我标识（它打印这行并 exit 0）。
 # 这里与 run_ui_smoke.py 里的字面量必须一致，run_build_probe 有断言钉住两边不漂移。
 UI_SMOKE_SKIP_MARK = "SKIP run_ui_smoke"
+# run_app_probe 无桌面时的自我标识（与 run_app_probe.py 里的字面量必须一致，
+# run_build_probe 同样有防漂移断言）。★ 它自 2026-09-17 起是**必须接**的：
+# 探针在那之前只会"打印 SKIP"，run_ci 不认识这个标识 → release 档会把"整步被跳过"
+# 静默当通过（覆盖消失而 RESULT 仍 PASS），是比断言空转更危险的一种假绿。
+APP_PROBE_SKIP_MARK = "SKIP run_app_probe"
 # Qt 试点探针缺 PySide6/桌面时的自我标识（与 run_qt_pilot_probe.py 里的字面量必须一致）。
 QT_PILOT_SKIP_MARK = "SKIP run_qt_pilot_probe"
 # Qt 冻结产物探针缺 PyInstaller/PySide6 时的自我标识（与 run_qt_build_probe.py 一致）。
@@ -342,9 +349,14 @@ def main():
 
     # 扩展点阀门与构造级闸门：把"注册成功但无人消费"和"方法体内隐式初始化"
     # 这两类 run_ci 只 import 抓不到的缺陷变成机器可查。
-    for script, title in (("run_ext_probe.py", "run_ext_probe (扩展点端到端)"),
-                          ("run_app_probe.py", "run_app_probe (构造级 + 入口级)"),
-                          ("run_scroll_audit.py", "run_scroll_audit (真页面滚动条几何)")):
+    # 第三列 = 该探针"缺外部前提"时自报的 SKIP 标识（None = 不适用）。
+    # run_app_probe 需要桌面 Tk；无桌面时它自报 SKIP，这里**必须按档位处置**：
+    # fast/local 记入"本次未覆盖"，release 档判 FAIL —— 否则 release 会把"整步被跳过"
+    # 静默当成通过（覆盖消失而 RESULT 仍 PASS，是最危险的一种假绿）。
+    for script, title, skip_mark in (
+            ("run_ext_probe.py", "run_ext_probe (扩展点端到端)", None),
+            ("run_app_probe.py", "run_app_probe (构造级 + 入口级)", APP_PROBE_SKIP_MARK),
+            ("run_scroll_audit.py", "run_scroll_audit (真页面滚动条几何)", None)):
         step(title)
         path = os.path.join(HERE, script)
         if not os.path.isfile(path):
@@ -357,10 +369,14 @@ def main():
         proc = subprocess.run([sys.executable, path], cwd=HERE,
                               capture_output=True, text=True, encoding="utf-8",
                               errors="replace", timeout=600)
-        tail = [ln for ln in (proc.stdout or "").strip().splitlines() if ln.strip()]
+        out = proc.stdout or ""
+        tail = [ln for ln in out.strip().splitlines() if ln.strip()]
         for ln in tail[-6:]:
             print("  " + ln)
-        if proc.returncode == 0:
+        if skip_mark is not None and skip_mark in out:
+            ok = prereq_missing("%s（无桌面 Tk）" % title,
+                                "探针自报无法创建 Tk 根窗口", release) and ok
+        elif proc.returncode == 0:
             print("  OK")
         else:
             print("  FAIL")

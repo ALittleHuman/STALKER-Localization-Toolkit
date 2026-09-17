@@ -18,6 +18,7 @@
 """
 import os
 import sys
+import threading
 import time
 import traceback
 
@@ -56,6 +57,24 @@ _patch_dialogs()
 import tkinter as tk  # noqa: E402
 
 # 需要桌面：无显示环境按 SKIP 处理（退出码 0），绝不伪装成失败。
+# ★ 光有 try/except 不够：在某些环境里 `tk.Tk()` **既不抛异常也不返回**（2026-09-17 实测：
+#   GitHub runner 上本探针挂满 run_ci 的 600 秒超时，把整轮闸门拖死）。所以这里再加一道
+#   **看门狗**：根窗口照旧在主线程建（Tk 要求），另起一条守护线程计时；超时仍未建出，就
+#   打印同一条 SKIP 标识并硬退出（此时 Tk 调用可能永远阻塞，不能等清理逻辑跑完）。
+#   超时秒数可用环境变量 `APP_PROBE_TK_TIMEOUT` 覆盖（默认 20 秒；正常建窗远小于 1 秒）。
+_TK_BOOT_TIMEOUT = float(os.environ.get("APP_PROBE_TK_TIMEOUT", "20"))
+_TK_BOOT_DONE = threading.Event()
+
+
+def _tk_boot_watchdog():
+    if not _TK_BOOT_DONE.wait(_TK_BOOT_TIMEOUT):
+        print("SKIP run_app_probe: 无法创建 Tk 根窗口（需要桌面环境）: "
+              "建窗 %.1f 秒未返回" % _TK_BOOT_TIMEOUT)
+        sys.stdout.flush()
+        os._exit(0)
+
+
+threading.Thread(target=_tk_boot_watchdog, daemon=True).start()
 try:
     try:
         from tkinterdnd2 import TkinterDnD  # noqa: F401
@@ -64,8 +83,10 @@ try:
         _ROOT = tk.Tk()
     _ROOT.withdraw()
 except Exception as _e:
+    _TK_BOOT_DONE.set()
     print("SKIP run_app_probe: 无法创建 Tk 根窗口（需要桌面环境）: %s" % _e)
     sys.exit(0)
+_TK_BOOT_DONE.set()
 
 from apps.font_pack_app import FontPackApp          # noqa: E402
 from apps.convert_app import ConvertApp             # noqa: E402

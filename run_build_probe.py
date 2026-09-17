@@ -1496,6 +1496,15 @@ def test_ci_gate_tiers():
             % rc.UI_SMOKE_SKIP_MARK)
     check("run_ci：UI 冒烟的 SKIP 标识与 run_ui_smoke.py 一致（防漂移）", _skip_mark_matches)
 
+    def _app_probe_skip_mark_matches():
+        src = open(os.path.join(BASE, "run_app_probe.py"), encoding="utf-8").read()
+        assert rc.APP_PROBE_SKIP_MARK in src, (
+            "run_ci 用 %r 识别「无桌面 Tk」的 SKIP，而 run_app_probe.py 里没有这个字面量："
+            "两边一旦漂移，无桌面时 run_ci 会把 SKIP 当失败（或反之把整步被跳过当通过）"
+            % rc.APP_PROBE_SKIP_MARK)
+    check("run_ci：构造级探针的 SKIP 标识与 run_app_probe.py 一致（防漂移）",
+          _app_probe_skip_mark_matches)
+
     def _xv_env_matches():
         src = open(os.path.join(BASE, "cross_validate.py"), encoding="utf-8").read()
         assert rc.CONVERTER_ENV in src, (
