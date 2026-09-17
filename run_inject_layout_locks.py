@@ -45,7 +45,8 @@ TW = os.path.join(BASE, "toolkit_widgets.py")
 XCA = os.path.join(BASE, "apps", "xml_compare_app.py")
 FSA = os.path.join(BASE, "apps", "fs_app.py")
 SF = os.path.join(BASE, "file_system", "stalker_fs.py")
-TARGETS = (QT, QTH, PLUG, FPK, FPA, BG, TW, XCA, SF, FSA)
+TEA = os.path.join(BASE, "apps", "text_extract_app.py")
+TARGETS = (QT, QTH, PLUG, FPK, FPA, BG, TW, XCA, SF, FSA, TEA)
 
 L_OK = "真实插件面板在 Qt 后端建出来了（panel/ok，而不是 skip）"
 L_SRC = "engine_utf8_patch 里已无 Tk 构造/对话框（迁移真的落到 api.ui）"
@@ -320,6 +321,13 @@ INJECTIONS = [
      '        sqfs_extract_last_error = _sqfs_failure_note(failed, count)',
      '        sqfs_extract_last_error = None    # 注入：失败静默（界面只剩"返回 0"）',
      "解包失败要说出原因"),
+    # ㊸ 用户口径 2026-09-17："拖入的直接是 script(s) 或 gameplay，不要像之前那样找。"
+    #     把"看文件夹自己的名字"拆掉（恒当 gameplay）→ 选上层目录也不再被拒绝 →
+    #     "源目录必须是 gameplay/scripts 文件夹本身" 那条锁必须红。
+    (TEA, "run_functional_probe.py", "源目录类型不看文件夹名（旧的往下找语义）",
+     '    base = os.path.basename(os.path.normpath(source)).lower()',
+     '    base = "gameplay"                      # 注入：不看文件夹名（旧的"往下找"语义）',
+     "源目录必须是 gameplay/scripts 文件夹本身"),
 ]
 
 

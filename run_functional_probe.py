@@ -76,12 +76,30 @@ def test_text_extract(tmp):
 
     out = os.path.join(tmp, "tx_out")
     os.makedirs(out, exist_ok=True)
-    stats = run_extraction(os.path.join(tmp, "tx"), out, "zz", False, log_callback=None)
+    # 源目录**直接是** gameplay 文件夹本身（用户口径 2026-09-17："拖入的直接是
+    # script(s) 或 gameplay，不要像之前那样找。"）—— 传上层 tx/ 现在会被拒绝。
+    stats = run_extraction(src, out, "zz", False, log_callback=None)
 
     check("文本提取：产出 gp XML 文件",
           lambda: os.path.isfile(os.path.join(out, "gameplay", "zz_gameplay_texts.xml"))
           or os.path.isfile(os.path.join(out, "zz_gameplay_texts.xml")))
     check("文本提取：统计条目数 >= 2", lambda: stats["gp_strings"] >= 2)
+
+    # 源目录判据（用户口径 2026-09-17："拖入的直接是 script(s) 或 gameplay，不要像
+    # 之前那样找。"）：选中的文件夹**本身**就得是 gameplay/scripts；选上层目录必须
+    # 被拒绝，而不是去它里面查找子目录（旧行为：模组根会被拆成两类、一次产两个 XML）。
+    def _source_types_are_direct():
+        from apps.text_extract_app import _resolve_source_types
+        assert _resolve_source_types(src) == ["gameplay"], \
+            "传 gameplay 文件夹本身时应只处理 gameplay"
+        try:
+            _resolve_source_types(os.path.join(tmp, "tx"))
+        except ValueError:
+            return
+        raise AssertionError("选了上层目录（里面含 gameplay/）却没被拒绝 —— "
+                             "「向下查找」的旧语义又回来了")
+    check("文本提取：源目录必须是 gameplay/scripts 文件夹本身（不再向下查找）",
+          _source_types_are_direct)
 
     # 产出的 XML 必须能被解析回来
     from toolkit_textio import read_text_file
