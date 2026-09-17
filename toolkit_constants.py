@@ -36,8 +36,10 @@ DEFAULT_DB_EXT = ".db"
 DEFAULT_PACK_BASENAME = "packed"
 
 # SquashFS 相关：临时文件后缀与外部工具名
+# ★ 2026-09-17：`sqfs2tar.exe` 已从工具集里去掉并删除（会把整包流进内存、被 360 按
+#   哈希拦、且要删掉文件才能消掉弹窗）——现在只需要"读"和"封"两个工具。
 SQFS_TMP_SUFFIX = ".sqfs"
-SQFS_TOOL_NAMES = ("rdsquashfs.exe", "sqfs2tar.exe", "tar2sqfs.exe")
+SQFS_TOOL_NAMES = ("rdsquashfs.exe", "tar2sqfs.exe")
 
 
 def is_package_name(path):

@@ -617,9 +617,11 @@ Tk/Win32 架构，见 §九。
 `lzhuf_dll.dll` → `%TEMP%` 下由 `lzhuf_dll.b64` 解码出来的副本）。装配完成后
 `lzhuf.encode` / `lzhuf.decode` 被换成 `_lzhuf_encode_locked` / `_lzhuf_decode_locked`。
 
-**SquashFS**：通过 `deps\squashfs-tools-ng-*` 的 `rdsquashfs.exe` / `sqfs2tar.exe` /
-`tar2sqfs.exe`。列表结构走 `rdsquashfs --describe`，尺寸走一次 `sqfs2tar`；
-批量导出用一次 `sqfs2tar` 而非逐个 `--cat`。
+**SquashFS**：通过 `deps\squashfs-tools-ng-*` 的 `rdsquashfs.exe`（读）与 `tar2sqfs.exe`（封）。
+`sqfs2tar.exe` 已于 2026-09-17 **连文件一起删除**（见 §11.15：它会把整包收进内存、被 360
+按哈希拦、且弹窗是按"文件存在"触发的）。列表结构走 `rdsquashfs --describe`；**尺寸**由纯 Python
+读元数据（§11.14）；**提取**选中集逐个 `rdsquashfs --cat`（一项一个进程，实测 0.032s/项），
+整镜像一次 `--unpack-path`。三条路都不把整包放进内存。
 
 **字库**（`font_pack/font_pack.py`）：`extract_chars` → `render_font` → `write_dds` →
 `build_package(game, lang, xml_dir, font_path, out_dir, …)`。字号表 `SIZES`（10 档：
@@ -1830,6 +1832,54 @@ qt 63 / qtbuild 11 / ui 13 / eng 8 / pyflakes 0）；注入 **35/35** 全部符�
 **仍未做完（下一步）**：`sqfs_extract` 的批量分支（勾 >8 个文件）**还在用 `sqfs2tar`** —— 那是本仓库最后一处引用，
 去掉它才能把 `deps\...\sqfs2tar.exe` 整个删掉（360 是按**文件存在**触发弹窗的）。计划：改按目录分组
 `rdsquashfs --unpack-path`（整体选中时一次一目录）+ 其余逐文件 `--cat`，保留 `safe_out_path` 守卫。
+
+> ★ **2026-09-17 同日晚些时候已做完**，且做法与上面这条计划不同（逐文件 `--cat`，不按目录分组）：
+> 见 §11.15 —— 那条"计划"里的 `--unpack-path` 分组会顺手解出**没勾的文件**，所以弃用。
+
+### 11.15 2026-09-17：**"解包失败（返回 0）"的根因与修复**（`sqfs2tar` 连文件一起删掉）
+
+用户现场（BETA.11，`build_55`）：浏览 `gamedata.sq_textures`（8.3GB，19641 项）后勾 1094 项解包 →
+`gamedata.sq_textures: SquashFS 解包失败（返回 0），跳过 1094 项` / `成功 0 / 共 1094 项`，
+耗时 **10 分钟**。
+
+**根因**（`file_system/stalker_fs.py::sqfs_extract`，勾 >8 个才进的那条批量分支）：
+
+| 事实 | 判据/来源 |
+|---|---|
+| 该分支调 `sqfs2tar <镜像>` 并用 `capture_output=True` 把**整包 tar 收进内存**（8.3GB 镜像 → tar 8.49GB） | 本机实测同一命令：输出**写文件** 339 MB/s、整镜像 **23s**；输出**收进内存**时 **90s 仍在跑、已缓冲 8 489 604 096 字节**；把上限放到 1200s，读取线程直接 **MemoryError** |
+| 用户那次的 10 分钟不是"跑完了"，是 `timeout=600` | 日志 16:12:33.877 → 16:22:33.921 = **600.044s**（`TimeoutExpired` 在 600s 触发后 44ms 打日志） |
+| 异常被吞 → 返回 0，**逐个 `--cat` 的回退根本没跑** | 函数体最外层 `except Exception: return 0` 把批量分支与回退循环一起包在里面 |
+| 回退其实很快 | 真镜像逐条 `rdsquashfs --cat`：30/30 成功、**0.032s/个**（1094 项 ≈ 35s） |
+| 同一条分支还有第二个错：`if rc == 0 and r.stdout` 把**空文件**当成"解不出来" | 空文件是合法条目（同 §11.7 的 `write_extracted_file` 三态语义） |
+| 这条分支**零探针覆盖** | 往返锁只提 3 个条目，`>8` 才进批量分支 → 从探针底下整条溜过 |
+
+**修法**：批量分支**整段删掉**（仓库最后一处 `sqfs2tar` 引用），选中集统一**逐个 `rdsquashfs --cat`**；
+每项单独 try（一处失败只算这一项，不再炸掉整批）；`stdout` 接**文件句柄**并写临时文件、`rc == 0` 才
+`os.replace`（单项再大也不进内存，失败不留半截文件）；新增 `sqfs_extract_last_error`，`apps/fs_app.py`
+三处失败日志都带上原因（`_sqfs_why()`）——界面不再只剩"（返回 0）"。
+`deps\...\bin\sqfs2tar.exe` **已从仓库与工作树删除**（360 按文件存在弹窗），`SQFS_TOOL_NAMES` 同步去掉它。
+
+**验收（真机，非抽样）**：
+
+| 判据 | 实测 |
+|---|---|
+| 真镜像 `gamedata.sq_textures` 选 **1094 项** | 提取 **1094/1094**、`last_error=None`、**40.6s**（旧路径 600s 后返回 0）、落盘 **645 822 674 字节** |
+| 落盘尺寸 vs **独立**元数据读取 | 1094 项**零不符** |
+| 逐字节 vs **独立实现**（`sqfs2tar` 流式产出的 tar，删 exe 前跑） | 命中 1094/1094，**逐字节一致 1094、不符 0** |
+| 合成镜像 12 项（>8，含 0 字节文件 / 中文 / 俄文 / 234KB 跨块大文件） | 12/12 内容一致，空文件 0 字节 |
+
+**锁**（`run_functional_probe`，functional **115 → 118**）：①「SquashFS 批量提取（>8 项，含空文件与中文/俄文名）」；
+②「SquashFS 解包失败要说出原因（成功时为 None）」；③「SquashFS 不再依赖 `sqfs2tar`（deps 里没有、
+代码里不调用；注释与文档串不算）」。
+**先证会红**（把三个源文件 `git checkout` 回 HEAD 再跑）：**PASS 115 / FAIL 3** —— 批量锁报"提取了 11 个（应为 12）"
+（空文件丢）、可见性锁报 `AttributeError: no attribute 'sqfs_extract_last_error'`、依赖锁报
+`file_system\stalker_fs.py:1357` 出现 `sqfs2tar`。
+**注入**（40 → **43** 条，`run_inject_layout_locks.py`）：批量只解前 8 项 → 批量锁红；把工具名塞回活代码 →
+依赖锁红；不写 `sqfs_extract_last_error` → 可见性锁红。三条都 `[OK] 目标锁变红`，最终还原一致。
+
+**只报告、本轮未改**：整镜像分支（`files is None`）走一次 `rdsquashfs --unpack-path / -p <out>`，
+其落盘路径安全**由外部工具自己负责** —— 本轮没有验证它是否拒绝镜像里名为 `..` 的目录条目
+（选中分支已由 `safe_out_path` 逐条收敛）。
 
 ---
 

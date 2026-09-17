@@ -303,6 +303,23 @@ INJECTIONS = [
      '            sqfs_last_error = "%s: %s" % (type(e).__name__, e)',
      '            sqfs_last_error = None        # 注入：失败静默（用户只看到 0 B）',
      "取大小失败**要可见**"),
+    # ㊵㊶㊷ 2026-09-17「解包失败（返回 0）」这一族：批量分支弃用 sqfs2tar、逐条 --cat、
+    #     失败必须说出原因。三条注入分别钉住：① 批量静默丢件；② 活代码里又出现被删掉的
+    #     工具名（会整包收进内存 / 被 360 拦）；③ 失败静默（界面只剩"返回 0"）。
+    (SF, "run_functional_probe.py", "批量提取只解前 8 项（静默丢件）",
+     '    count, failed = 0, []',
+     '    count, failed = 0, []\n'
+     '    files = files[:8]                 # 注入：批量只解前 8 项（静默丢件）',
+     "SquashFS 批量提取"),
+    (SF, "run_functional_probe.py", "活代码里又出现 sqfs2tar（整包收进内存/被 360 拦）",
+     '_SQFS_CAT_TIMEOUT = 300      # 单个文件的 --cat 上限（秒）：只读一个文件，不该久等',
+     '_SQFS_CAT_TIMEOUT = 300\n'
+     '_SQFS_LEGACY_T2T = "sqfs2tar.exe"     # 注入：把删掉的工具名塞回活代码',
+     "不再依赖 sqfs2tar"),
+    (SF, "run_functional_probe.py", "解包失败静默（不写 sqfs_extract_last_error）",
+     '        sqfs_extract_last_error = _sqfs_failure_note(failed, count)',
+     '        sqfs_extract_last_error = None    # 注入：失败静默（界面只剩"返回 0"）',
+     "解包失败要说出原因"),
 ]
 
 

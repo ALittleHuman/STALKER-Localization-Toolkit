@@ -113,6 +113,18 @@ def _sqfs_extract_ok(got):
     -1 这个成功码误判为失败，所以必须同时认这两种成功形态。
     """
     return isinstance(got, int) and got != 0
+
+
+def _sqfs_why():
+    """解包失败时把引擎给的原因取回来（没有就返回空串）。
+
+    为什么加（2026-09-17）：原先失败只打一行"（返回 0）"—— 用户看到的是一只 8.3GB
+    的镜像"解包失败"，却不知道是缺工具、镜像不是 SquashFS、还是外部工具报错；
+    现场那次真因（`sqfs2tar` 把整包收进内存、卡满 600s 超时）因此完全不可见。
+    """
+    why = getattr(stalker_fs, "sqfs_extract_last_error", None)
+    return ("：%s" % why) if why else ""
+
 class FSToolApp:
     """文件系统（X-Ray DB / SquashFS）工具。
 
@@ -1469,7 +1481,7 @@ class FSToolApp:
                     sqfs_ok.add(src)
                 else:
                     log_summary(f"  {os.path.basename(src)}: SquashFS 解包失败"
-                                f"（返回 {got!r}），跳过 {len(want)} 项", "err")
+                                f"（返回 {got!r}）{_sqfs_why()}，跳过 {len(want)} 项", "err")
             done = fail = skip = 0
             for i, n in enumerate(nodes):
                 try:
@@ -1555,7 +1567,8 @@ class FSToolApp:
                         got = sqfs_extract(db_path, os.path.join(out, pkg))
                         if not _sqfs_extract_ok(got):
                             fail += 1
-                            log_summary(f"  {basename}: SquashFS 全解失败（返回 {got!r}）", "err")
+                            log_summary(f"  {basename}: SquashFS 全解失败"
+                                        f"（返回 {got!r}）{_sqfs_why()}", "err")
                         else:
                             ok += 1
                             log_summary(f"  {basename} → {pkg}/: SquashFS 全解 {got} 项", "ok")
@@ -1565,7 +1578,8 @@ class FSToolApp:
                         got = sqfs_extract(dp, os.path.join(out, pkg))
                         if not _sqfs_extract_ok(got):
                             fail += 1
-                            log_summary(f"  {basename}: 解密包全解失败（返回 {got!r}）", "err")
+                            log_summary(f"  {basename}: 解密包全解失败"
+                                        f"（返回 {got!r}）{_sqfs_why()}", "err")
                         else:
                             ok += 1
                             log_summary(f"  {basename} → {pkg}/: 解密包全解 {got} 项", "ok")

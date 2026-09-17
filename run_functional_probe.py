@@ -518,6 +518,115 @@ def test_engine(tmp):
             assert open(fp, "rb").read() == d, "%s 内容不一致" % p
     check("引擎：SquashFS 真实往返（封包/列表/提取，含中文与俄文路径）", _sqfs_roundtrip)
 
+    def _sqfs_batch_extract():
+        """SquashFS **批量提取**（一次要 >8 个条目）必须逐个都对，"空文件"也算解出来。
+
+        为什么补这条（2026-09-17）：往返锁只提 3 个条目，而 `sqfs_extract` 里"勾 >8 个"
+        是一条**另外的**分支 —— 那条分支**零覆盖**，于是现场"勾 1094 项 → 解包失败
+        （返回 0）"从探针底下整条溜了过去（真因见下方 `_sqfs_no_sqfs2tar`）。
+        判据：12 个条目一次提完（含 0 字节文件、中文/俄文路径、跨多个 128KB 数据块的
+        234KB 大文件），逐个字节一致；空文件必须存在且为 0 字节（空文件是**合法**条目，
+        历史写法 `and r.stdout` 会把它当"解不出来"）；成功时 `sqfs_extract_last_error`
+        必须是 None。
+        """
+        if not FS._find_sqfs_tool():
+            skip("引擎：SquashFS 批量提取（>8 项，含空文件与中文/俄文名）",
+                 "本机没有 deps/squashfs-tools-ng（外部工具，不入库）")
+            return
+        names = [("空文件.bin", b""),
+                 ("配置/中文名.xml", "<x>中文</x>".encode("utf-8")),
+                 ("тест/файл.txt", ("Привет" * 40).encode("utf-8")),
+                 ("big/blob.bin", bytes(range(256)) * 900),   # 234KB：跨多个数据块
+                 ("plain/a.bin", bytes(range(64)))]
+        names += [("many/f%02d.bin" % i, bytes([i]) * (i * 7 + 1)) for i in range(7)]
+        assert len(names) > 8, "这条锁的前提是条目数 >8（实际 %d）" % len(names)
+        img = os.path.join(tmp, "batch.sqfs")
+        assert FS.sqfs_pack([(p, d, False) for p, d in names], img), "sqfs_pack 失败"
+        ex = os.path.join(tmp, "batch_out")
+        n = FS.sqfs_extract(img, ex, [{"path": p, "is_dir": False} for p, _ in names])
+        assert n == len(names), "批量提取了 %d 个（应为 %d）" % (n, len(names))
+        assert FS.sqfs_extract_last_error is None, \
+            "全部成功时不该留失败提示：%r" % (FS.sqfs_extract_last_error,)
+        for p, d in names:
+            fp = os.path.join(ex, *p.split("/"))
+            assert os.path.isfile(fp), "没提取出 %r" % p
+            got = open(fp, "rb").read()
+            assert got == d, "%s 内容不一致（%d vs %d 字节）" % (p, len(got), len(d))
+    check("引擎：SquashFS 批量提取（>8 项，含空文件与中文/俄文名）", _sqfs_batch_extract)
+
+    def _sqfs_extract_failure_is_visible():
+        """解包失败**要说出原因**（`sqfs_extract_last_error`），成功时必须是 None。
+
+        背景（2026-09-17）：现场那只 8.3GB 镜像的 1094 项解包，界面只给了"（返回 0）"
+        —— 用户无从判断是缺工具、镜像不对、还是外部工具报错，真因（外部工具把整包
+        收进内存、卡满 600s 超时）因此藏了一整轮。判据：① 有条目不存在 → 其余照解、
+        原因里点名那一条；② 不是 SquashFS 镜像 → 0 且原因写明；③ 一条都没失败 → None
+        （③ 由上面那条批量锁断言）。
+        """
+        if not FS._find_sqfs_tool():
+            skip("引擎：SquashFS 解包失败要说出原因（成功时为 None）",
+                 "本机没有 deps/squashfs-tools-ng（外部工具，不入库）")
+            return
+        img = os.path.join(tmp, "vis.sqfs")
+        assert FS.sqfs_pack([("a.txt", b"AAA", False), ("b.txt", b"BBB", False)], img), \
+            "sqfs_pack 失败"
+        ex = os.path.join(tmp, "vis_out")
+        n = FS.sqfs_extract(img, ex, [{"path": "a.txt", "is_dir": False},
+                                      {"path": "nope/missing.bin", "is_dir": False}])
+        assert n == 1, "缺失的那条不该带倒其余条目：a.txt 应照样解出来（实际 %r）" % n
+        assert os.path.isfile(os.path.join(ex, "a.txt")), "a.txt 没解出来"
+        why = FS.sqfs_extract_last_error
+        assert why, "有条目解不出来却没有任何原因（界面只会显示「返回 1」）"
+        assert "nope/missing.bin" in why, "原因里必须点出是哪一条：%r" % (why,)
+        fake = os.path.join(tmp, "not_sqfs.bin")
+        with open(fake, "wb") as fh:
+            fh.write(b"not a squashfs image")
+        n = FS.sqfs_extract(fake, ex)
+        assert n == 0, "非 SquashFS 文件应返回 0（实际 %r）" % n
+        assert FS.sqfs_extract_last_error, "不是 SquashFS 镜像时必须说明原因"
+    check("引擎：SquashFS 解包失败要说出原因（成功时为 None）", _sqfs_extract_failure_is_visible)
+
+    def _sqfs_no_sqfs2tar():
+        """**不再依赖 `sqfs2tar`**：工具不许留在 deps 里，活代码里也不许再调用它。
+
+        为什么是硬锁（2026-09-17）：它就是"解包失败（返回 0）"的根 —— `sqfs_extract`
+        曾用 `sqfs2tar` 一次流整包、并把输出**全收进内存**（`capture_output=True`；
+        真实镜像 `gamedata.sq_textures` 8.3GB 实测：同一命令写文件 339MB/s=23s，
+        收进内存后 90s 仍在跑、已缓冲 8.49GB）→ 卡满 `timeout=600` → 异常被吞 →
+        返回 0，逐个 `--cat` 的回退根本没跑。另外 360 是**按文件存在**弹窗的，
+        把 exe 留在 deps 里就等于让用户继续被拦。
+        断言：① `deps/.../bin/sqfs2tar.exe` 不存在；② `stalker_fs.py` / `fs_app.py` 的
+        **可执行代码**里不出现这个名字（注释与文档串允许 —— 那里要写清为什么禁用）。
+        """
+        import ast as _ast
+        tool = os.path.join(BASE, "deps", "squashfs-tools-ng-1.3.2-mingw64",
+                            "bin", "sqfs2tar.exe")
+        assert not os.path.exists(tool), \
+            "deps 里还留着 sqfs2tar.exe（360 按文件存在弹窗、且它会把整包收进内存）：%s" % tool
+        bad = []
+        for rel in (os.path.join("file_system", "stalker_fs.py"),
+                    os.path.join("apps", "fs_app.py")):
+            p = os.path.join(BASE, rel)
+            with open(p, encoding="utf-8") as fh:
+                tree = _ast.parse(fh.read(), filename=p)
+            docstrings = set()
+            for node in _ast.walk(tree):
+                body = getattr(node, "body", None)
+                if (isinstance(body, list) and body and isinstance(body[0], _ast.Expr)
+                        and isinstance(body[0].value, _ast.Constant)
+                        and isinstance(body[0].value.value, str)):
+                    docstrings.add(id(body[0].value))
+            for node in _ast.walk(tree):
+                if (isinstance(node, _ast.Constant) and isinstance(node.value, str)
+                        and id(node) not in docstrings and "sqfs2tar" in node.value):
+                    bad.append("%s:%d" % (rel, node.lineno))
+                elif isinstance(node, _ast.Name) and "sqfs2tar" in node.id:
+                    bad.append("%s:%d" % (rel, node.lineno))
+                elif isinstance(node, _ast.Attribute) and "sqfs2tar" in node.attr:
+                    bad.append("%s:%d" % (rel, node.lineno))
+        assert not bad, ("活代码里又出现了 sqfs2tar（会把整包收进内存/被 360 拦）：%r" % bad)
+    check("引擎：SquashFS 不再依赖 sqfs2tar（deps 里没有、代码里不调用）", _sqfs_no_sqfs2tar)
+
     def _sqfs_size_failure_is_visible():
         """**取不到文件大小必须说出来**（不再 `try/except pass` + 静默 0 B）。
 

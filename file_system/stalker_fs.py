@@ -1065,6 +1065,7 @@ _SQFS_T_SLINK = 3
 _SQFS_T_DIR_X, _SQFS_T_FILE_X, _SQFS_T_SLINK_X = 8, 9, 10
 
 sqfs_last_error = None          # 最近一次 sqfs_list 取大小的失败原因（UI 要显示出来）
+sqfs_extract_last_error = None  # 最近一次 sqfs_extract 的失败原因（"返回 0"必须能说出为什么）
 
 
 def _sqfs_lz4_block(src):
@@ -1257,7 +1258,8 @@ def _sqfs_meta_sizes(path):
 
 def sqfs_list(path: str) -> Optional[list]:
     """List entries in a PLAIN SquashFS image, with real file sizes.
-    Structure via rdsquashfs --describe; sizes via sqfs2tar (one pass)."""
+    Structure via `rdsquashfs --describe`; sizes via **纯 Python 读元数据**
+    (`_sqfs_meta_sizes`) —— 不经过任何"把整包流一遍"的外部工具。"""
     import subprocess
     if sqfs_check(path) != "sqfs": return None
     tool = _find_sqfs_tool()
@@ -1339,63 +1341,105 @@ def safe_out_path(out_dir, rel):
     return p
 
 
+def _sqfs_failure_note(failed, count):
+    """把"哪些项失败、为什么"压成一行（最多列 3 项）—— 只报"返回 0"用户无从判断。"""
+    return "%d/%d 项失败：%s%s" % (
+        len(failed), count + len(failed),
+        "；".join(failed[:3]), "…" if len(failed) > 3 else "")
+
+
+def _quiet_unlink(path):
+    """尽力删掉临时文件：不存在、被占用都不抛。"""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+_SQFS_CAT_TIMEOUT = 300      # 单个文件的 --cat 上限（秒）：只读一个文件，不该久等
+
+
 def sqfs_extract(path: str, out_dir: str, files: list = None) -> int:
     """Extract from a PLAIN SquashFS image. files: list of dicts with path.
-    If files is None, extracts everything. Returns count."""
+    If files is None, extracts everything. Returns count.
+
+    ★ 选中集**逐个 `rdsquashfs --cat`**（2026-09-17 修，进 BETA 的那条"解包失败返回 0"）。
+      原先"勾 >8 个"走一次 `sqfs2tar`，并把**整包 tar 收进内存**（`capture_output=True`）。
+      真实镜像 `gamedata.sq_textures`（8.3GB）实测：同一命令把输出写文件是 339MB/s
+      （整镜像 23s），改成收进内存后 **90s 仍在跑、已缓冲 8.49GB**；用户现场正好卡在
+      `timeout=600`（日志 16:12:33 → 16:22:33 = 600.04s），`TimeoutExpired` 被外层
+      `except Exception` 吞掉 → 返回 0 —— **逐个 --cat 的回退根本没跑**。逐条实测
+      0.032s/个（1094 项 ≈ 35s），既不吞内存，也没有那个 600s 上限。
+      同一条分支还有第二个错：`if r.returncode == 0 and r.stdout` 把**空文件**当成
+      "解不出来"（空文件是合法条目）—— 现在 `rc == 0` 就算出来了（照写 0 字节）。
+    整镜像（files is None）仍走一次 `--unpack-path`：那条路**不加 capture_output**，
+    输出直接由外部工具落盘，不存在"整包收进内存"。
+    """
     import subprocess
-    if sqfs_check(path) != "sqfs": return 0
-    tool = _find_sqfs_tool()
-    if not tool: return 0
-    try:
-        if files:
-            wanted = {f["path"].replace("\\", "/").lstrip("./") for f in files if not f.get("is_dir")}
-            if len(wanted) > 8:
-                # 批量导出：一次 sqfs2tar 比逐个 rdsquashfs --cat 快得多。
-                import io as _io
-                import tarfile as _tarfile
-                base = os.path.dirname(tool)
-                t2t = os.path.join(base, "sqfs2tar.exe")
-                if os.path.exists(t2t):
-                    r = subprocess.run([t2t, path], capture_output=True, timeout=600,
-                                       creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-                    if r.returncode == 0:
-                        count = 0
-                        with _tarfile.open(fileobj=_io.BytesIO(r.stdout)) as tar:
-                            for m in tar:
-                                name = m.name.replace("\\", "/").lstrip("./")
-                                if name in wanted and m.isfile():
-                                    p = safe_out_path(out_dir, name)
-                                    if p is None:
-                                        continue     # 归档内路径逃逸 → 拒绝写出
-                                    os.makedirs(os.path.dirname(p), exist_ok=True)
-                                    src = tar.extractfile(m)
-                                    if src is not None:
-                                        with open(p, "wb") as fh:
-                                            fh.write(src.read())
-                                        count += 1
-                        return count
-            count = 0
-            for f in files:
-                if f.get("is_dir"): continue
-                r = subprocess.run([tool, "--cat", f["path"], path],
-                                   capture_output=True, timeout=60,
-                                   creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-                if r.returncode == 0 and r.stdout:
-                    p = safe_out_path(out_dir, f["path"])
-                    if p is None:
-                        continue             # 归档内路径逃逸 → 拒绝写出
-                    os.makedirs(os.path.dirname(p), exist_ok=True)
-                    with open(p, "wb") as fh: fh.write(r.stdout)
-                    count += 1
-            return count
-        else:
-            r = subprocess.run([tool, "--unpack-path", "/", "-p", out_dir, path],
-                               capture_output=True, text=True, timeout=300,
-                               encoding="utf-8", errors="replace",
-                               creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-            return -1 if r.returncode == 0 else 0
-    except Exception:
+    global sqfs_extract_last_error
+    sqfs_extract_last_error = None
+    if sqfs_check(path) != "sqfs":
+        sqfs_extract_last_error = "不是明文 SquashFS 镜像"
         return 0
+    tool = _find_sqfs_tool()
+    if not tool:
+        sqfs_extract_last_error = "找不到 rdsquashfs.exe（deps 不完整）"
+        return 0
+    cf = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    if not files:
+        try:
+            r = subprocess.run([tool, "--unpack-path", "/", "-p", out_dir, path],
+                               capture_output=True, text=True, timeout=3600,
+                               encoding="utf-8", errors="replace", creationflags=cf)
+        except Exception as e:
+            sqfs_extract_last_error = "%s: %s" % (type(e).__name__, e)
+            return 0
+        if r.returncode != 0:
+            sqfs_extract_last_error = ("rdsquashfs --unpack-path 返回 %d：%s"
+                                       % (r.returncode, (r.stderr or "").strip()[:300]))
+            return 0
+        return -1
+    count, failed = 0, []
+    for f in files:
+        if f.get("is_dir"):
+            continue
+        rel = f["path"]
+        # 归档内路径**不可信**：逃逸条目一律拒绝（这条判据在原来的 tar 分支里是另写一份，
+        # 现在逐条都过 safe_out_path）。
+        p = safe_out_path(out_dir, rel)
+        if p is None:
+            failed.append("%s：路径越界，拒绝写出" % rel)
+            continue
+        # 先写同目录的临时文件、**成功后才 replace**：外部工具失败时可能已经写了半截，
+        # 直接落盘就等于把既有文件静默损坏（工程里其他写入路径也都是原子写）。
+        tmp = p + ".part"
+        try:
+            d = os.path.dirname(p)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            # stdout 直接接文件句柄（不是 capture_output）：单文件再大也只过磁盘不过内存
+            with open(tmp, "wb") as fh:
+                r = subprocess.run([tool, "--cat", rel, path], stdout=fh,
+                                   stderr=subprocess.PIPE, timeout=_SQFS_CAT_TIMEOUT,
+                                   creationflags=cf)
+        except Exception as e:               # 单项失败**只算这一项**，不再炸掉整批
+            _quiet_unlink(tmp)
+            failed.append("%s：%s: %s" % (rel, type(e).__name__, e))
+            continue
+        if r.returncode != 0:
+            _quiet_unlink(tmp)
+            failed.append("%s：rdsquashfs --cat 返回 %d" % (rel, r.returncode))
+            continue
+        try:
+            os.replace(tmp, p)
+        except OSError as e:
+            _quiet_unlink(tmp)
+            failed.append("%s：写入失败 %s" % (rel, e))
+            continue
+        count += 1
+    if failed:
+        sqfs_extract_last_error = _sqfs_failure_note(failed, count)
+    return count
 
 
 def sqfs_pack(files: list, out_path: str) -> bool:
