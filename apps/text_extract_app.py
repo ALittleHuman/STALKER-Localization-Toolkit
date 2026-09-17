@@ -6,14 +6,14 @@
 独立的文本 XML 交给后续流程。
 
 用法 (Hub「文本提取」页):
-    源目录   = 模组根目录(含 gameplay/ 和/或 scripts/), 也可直接指向其中某一个
-               子目录; 两者都存在时**依次都处理**, 各产出一个 XML。
-               两者都不存在才拒绝。
-    输出目录 = 必填, 且不能与源目录相同。新文件写入 输出目录/gameplay|scripts,
+    待处理文件夹 = 选 **scripts/ 或 gameplay/ 文件夹**; 也可以直接指向模组根目录
+               (根目录同时含 gameplay/ 与 scripts/ 时**依次都处理**, 各产出一个
+               XML)。两者都不存在才拒绝。
+    输出目录 = 必填, 且不能与待处理文件夹相同。新文件写入 输出目录/gameplay|scripts,
                文本 XML 写在输出目录根: {prefix}_gameplay_texts.xml /
-               {prefix}_scripts_texts.xml —— 源目录里有哪类就产哪类, 某一类
+               {prefix}_scripts_texts.xml —— 待处理文件夹里有哪类就产哪类, 某一类
                未提取到文本就不产出该 XML。
-               **源目录中的原文件始终只读**: ID 替换后原文不可恢复, 因此不允许
+               **待处理文件夹中的原文件始终只读**: ID 替换后原文不可恢复, 因此不允许
                原地覆盖输出(旧版散装工具同样要求目标目录必填)。
     「提取前清理目标目录」= 先删除 输出目录/gameplay、输出目录/scripts 与同名
                {prefix}_*_texts.xml, 再开始提取(与旧版散装工具语义一致)。
@@ -410,7 +410,7 @@ def _resolve_source_types(source: str) -> List[str]:
         return [base]
     subs = [t for t in _TYPE_DIRS if os.path.isdir(os.path.join(source, t))]
     if not subs:
-        raise ValueError("源目录中未找到 gameplay 或 scripts 子目录")
+        raise ValueError("待处理文件夹中未找到 gameplay 或 scripts 子目录")
     return subs
 
 
@@ -431,7 +431,7 @@ def _plan_output_dirs(source: str, target: str, types: List[str]) -> List[Tuple[
         if os.path.normcase(os.path.abspath(src_sub)) == \
                 os.path.normcase(os.path.abspath(dst_sub)):
             raise ValueError(
-                "输出目录会覆盖源目录中的原文件（且不可恢复），请另选输出目录")
+                "输出目录会覆盖待处理文件夹中的原文件（且不可恢复），请另选输出目录")
         plan.append((t, src_sub, dst_sub))
     return plan
 
@@ -470,7 +470,7 @@ def run_extraction(source: str, target: str = "", prefix: str = FALLBACK_ID_PREF
     if not target:
         raise ValueError(
             "请指定输出目录：改写后的源文件与文本 XML 都写入输出目录，"
-            "源目录中的原文件不会被覆盖（原地覆盖后原文不可恢复，故不支持）")
+            "待处理文件夹中的原文件不会被覆盖（原地覆盖后原文不可恢复，故不支持）")
     target = os.path.abspath(target)
     plan = _plan_output_dirs(source, target, _resolve_source_types(source))
 
@@ -588,8 +588,8 @@ class TextExtractApp:
             log_summary(f"拖入的“{os.path.basename(p) or p}”不是文件夹，{field}未改变。", "warn")
 
     def _on_drop_source(self, event):
-        """拖拽文件夹到源目录框."""
-        self._drop_dir(event, self.source_path, "源目录")
+        """拖拽文件夹到"待处理文件夹"框."""
+        self._drop_dir(event, self.source_path, "待处理文件夹")
 
     def _on_drop_target(self, event):
         """拖拽文件夹到输出目录框."""
@@ -620,10 +620,10 @@ class TextExtractApp:
         ttk.Label(tr, text="cfgxml + script + ltx  ·  纯提取",
                   style="Dim.TLabel").pack(side=tk.RIGHT)
 
-        self._build_dir_row(upper, "源目录（含 gameplay/ 和/或 scripts/，两者都有则都处理）",
+        self._build_dir_row(upper, "选择待处理的 scripts/ 或 gameplay/ 文件夹（两者都有则都处理）",
                             self.source_path, lambda: self._browse(self.source_path),
                             self._on_drop_source)
-        self._build_dir_row(upper, "输出目录（必填，不能与源目录相同；源目录只读不修改）",
+        self._build_dir_row(upper, "输出目录（必填，不能与待处理文件夹相同；待处理文件夹只读不修改）",
                             self.target_path, lambda: self._browse(self.target_path),
                             self._on_drop_target)
 
@@ -679,11 +679,11 @@ class TextExtractApp:
         pfx = self.prefix_var.get().strip() or FALLBACK_ID_PREFIX
         # 变量一律在主线程读好再交给工作线程（工作线程不碰 Tk）
         clean = bool(self.clean_var.get())
-        if not src: messagebox.showwarning("提示", "请指定源目录"); return
+        if not src: messagebox.showwarning("提示", "请选择待处理的 scripts/ 或 gameplay/ 文件夹"); return
         if not os.path.isdir(src):
-            errbox("错误", f"源目录不存在：\n{src}"); return
+            errbox("错误", f"文件夹不存在：\n{src}"); return
         if not dst:
-            # 长解释已按用户要求删除，只留与上面"请指定源目录"一致的短提示 ——
+            # 长解释已按用户要求删除，只留与上面"请选择待处理…文件夹"一致的短提示 ——
             # **不能整条删掉**：那样点「提取文本」会静默无反应，用户会以为程序坏了。
             messagebox.showwarning("提示", "请指定输出目录")
             return
