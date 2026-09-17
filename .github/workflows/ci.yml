@@ -9,6 +9,12 @@ jobs:
   core:
     runs-on: windows-latest
     timeout-minutes: 20
+    # runner 的控制台是 cp1252，而探针里有大量中文 print（本地是 GBK，同样不是 UTF-8）。
+    # run_ci.py 内部已对子进程兜底，这里再显式设一遍：换 runner / 换调用方式也不会再因为
+    # 编码把整轮闸门打断（2026-09-17 实测：8 个探针挂在 UnicodeEncodeError 上）。
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
 
