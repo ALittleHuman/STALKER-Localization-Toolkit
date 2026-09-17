@@ -27,8 +27,12 @@ jobs:
       #               于是"没告警"和"没检查"看起来一样（曾是假绿）。
       #   chardet  —— toolkit_textio.sniff_encoding 的统计探测；
       #               不装的话相关断言会 SKIP。
+      # 后两个是**探针要构造的 App 会用到的可选依赖**：run_app_probe 要构造六个 App，
+      # 其中汉化包生成首次使用会自动 pip 装 Pillow、GUI 需要 tkinterdnd2。不预先装上的话
+      # 探针会走进"运行时自动安装"那条路 —— 2026-09-17 在 runner 上实测直接卡满 run_ci 的
+      # 600 秒超时（表现为 run_app_probe 挂死，与代码逻辑无关）。
       - name: Install gate dependencies
-        run: python -m pip install --disable-pip-version-check pyflakes chardet
+        run: python -m pip install --disable-pip-version-check pyflakes chardet pillow tkinterdnd2
 
       - name: Run automated regression
         shell: pwsh
