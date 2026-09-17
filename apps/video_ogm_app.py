@@ -456,6 +456,7 @@ class VideoOGMApp:
         # 进度为**百分比**（0~100），由 _on_progress 按转换器回调直接写。
         self.task = TaskRunner(
             self.root, self._ui,
+            idle_status="就绪",          # 与 self.status_lbl 的初始文案一致
             on_busy=self._set_ui_state,
             status_setter=lambda text, kind="idle": self.status_lbl.configure(
                 text=text, style=status_style_name(kind)),

@@ -794,6 +794,70 @@ def main():
     check("滚轮：**没有滚动条的地方一律不许滚**（Text / 树 / 视口，三类都验）",
           no_scroll_without_bar)
 
+    # ── 用户 2026-09-17 报："加载上DB之后也显示'加载中'" ──────────────────────
+    # 根因：`TaskRunner.run(status=...)` 写的是运行期文案，而 `_finish()` 只在调用方
+    # **显式给了** final_status 时才改写 —— fs_app 的成功路径一个字都没写，于是
+    # "加载中…"永远留在状态栏（失败路径反而会写，所以只在成功时露出来）。契约三条：
+    #   ① 谁都没写收尾文案 → **恢复任务开始前的状态**（不许停在"…中"）；
+    #   ② on_error 写的失败状态优先，不被恢复覆盖；
+    #   ③ App 自己在完成回调里 set_status 的（"完成 · N 条"那种）优先，不被覆盖。
+    def task_finish_never_leaves_running_text():
+        import time as _t
+        import toolkit_widgets as _tw5          # 各段各自 import（本文件按段隔离）
+
+        app = built.get("fs")
+        assert app is not None, "fs App 没构造出来"
+        lbl = app.status_lbl
+
+        def pump_until_idle(times=300):
+            for _ in range(times):
+                _ROOT.update_idletasks(); _ROOT.update()
+                if not app.task.running:
+                    return True
+                _t.sleep(0.01)
+            return False
+
+        def run_task(work, status, on_error=None, final_status=None):
+            ok = app.task.run(work, status=status, on_error=on_error,
+                              final_status=final_status)
+            assert ok, "任务没能启动（上一个还没结束？）"
+            assert pump_until_idle(), "任务 3 秒内没结束"
+            for _ in range(6):
+                _ROOT.update_idletasks(); _ROOT.update()
+            return lbl.cget("text")
+
+        def set_idle():
+            lbl.configure(text="就绪", style=_tw5.status_style_name("idle"))
+            # ★ 故意**不同步** `_status_text`：真实 App 就是这样 —— 标签上的"就绪"是
+            #   控件构造时写的，而 TaskRunner 从没写过状态（内部是空串）。恢复时必须
+            #   用 `idle_status` 兜底，否则任务结束后状态栏会变成**空**（实测到的副作用）。
+            app.task._status_text, app.task._status_kind = "", "idle"
+
+        # ① 没人写收尾 → 恢复前置状态（用户报的就是这条）
+        set_idle()
+        got = run_task(lambda: _t.sleep(0.02), "加载中…")
+        assert got == "就绪", \
+            "任务结束后仍停在运行期文案（用户报的就是这个）：状态栏=%r" % (got,)
+
+        # ② 失败状态优先
+        def _boom():
+            raise RuntimeError("模拟加载失败")
+
+        got = run_task(_boom, "加载中…",
+                       on_error=lambda e: app.task.set_status("加载失败: %s" % e, "err"))
+        assert got.startswith("加载失败"), "失败状态被收尾覆盖了：%r" % (got,)
+
+        # ③ App 自己在完成回调里写的状态优先
+        def _self_report():
+            _t.sleep(0.02)
+            app._ui(lambda: app.task.set_status("完成 · 3 条", "ok"))
+
+        got = run_task(_self_report, "提取中…")
+        assert got == "完成 · 3 条", "App 自己写的完成文案被覆盖了：%r" % (got,)
+        set_idle()
+    check("任务壳：收尾后**不许停在「…中」**（没写收尾就恢复前置状态；失败/自报优先）",
+          task_finish_never_leaves_running_text)
+
     # xml: 模式判定必须取自结果数据（行内 mode 与界面变量背离时曾 KeyError: lines_a）
     x = built.get("xml")
     if x is not None:

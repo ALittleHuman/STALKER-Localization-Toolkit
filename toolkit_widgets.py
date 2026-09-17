@@ -351,7 +351,8 @@ class TaskRunner:
 
     def __init__(self, root, ui, on_busy=None, status_setter=None,
                  progress_started=None, progress_stopped=None,
-                 progress_var=None, progress_label=None, progress_setter=None):
+                 progress_var=None, progress_label=None, progress_setter=None,
+                 idle_status=""):
         self._root = root
         self._ui = ui
         self._on_busy = on_busy
@@ -365,6 +366,14 @@ class TaskRunner:
         self._status_text = ""
         self._status_kind = "idle"
         self._error_status = None      # on_error 里 set_status(...) 写入的失败状态
+        # ★ 任务开始前的状态 / run() 写的那句运行期文案（见 _finish 的"不许停在…中"）
+        self._prev_status = None
+        self._running_status = None
+        # ★ 本 App 空闲时状态栏显示什么（各 App 不同：fs/text_extract/video = "就绪"，
+        #   font_pack/xml = ""）。`_status_text` 在 App 从没写过状态时是空串，
+        #   而标签上的字是**控件构造时**写的 —— 两者不同步，所以恢复时要拿它兜底，
+        #   否则任务结束后状态栏会变成空（2026-09-17 实测到的副作用）。
+        self._idle_status = idle_status
         import threading as _th
         self._lock = _th.RLock()
 
@@ -449,8 +458,15 @@ class TaskRunner:
                 except Exception:
                     pass
 
+        # ★ 记下任务开始前的状态：结束时若**没有任何人**写新文案，就回到它。
+        #   否则 `status="加载中…"` 这类运行期文案会永远留在状态栏
+        #   （2026-09-17 用户报："加载上DB之后也显示'加载中'"）。
+        self._prev_status = (self._status_text or self._idle_status, self._status_kind)
         if status is not None:
             self.set_status(status, "running")
+            self._running_status = status
+        else:
+            self._running_status = None
         self._start_progress()
         import threading
 
@@ -502,7 +518,19 @@ class TaskRunner:
                 self.set_status(final_status[0], final_status[1])
             except Exception:
                 pass
+        elif (self._error_status is None and self._running_status is not None
+              and self._status_text == self._running_status
+              and self._prev_status is not None):
+            # 没人写过收尾文案（调用方没给 final_status、App 自己也没 set_status）
+            # → **恢复任务开始前的状态**，绝不允许停在"…中"。
+            # App 自己写过（text_extract/video/xml 那种"完成 · N 条"）时
+            # `_status_text` 已经变了，这里不会覆盖它。
+            try:
+                self.set_status(self._prev_status[0], self._prev_status[1])
+            except Exception:
+                pass
         self._error_status = None
+        self._running_status = None
         if self._on_busy is not None:
             try:
                 self._on_busy(False)

@@ -284,6 +284,14 @@ INJECTIONS = [
      '    if True:                      # 注入：永远认为条子可见（没条子也照样滚）\r\n'
      '        return True\r\n',
      "没有滚动条的地方一律不许滚"),
+    # ㊲ 用户 2026-09-17："加载上DB之后也显示'加载中'"。
+    #     把"没人写收尾就恢复前置状态"这条拆掉 → 状态栏永远停在"…中" → 锁变红。
+    (TW, "run_app_probe.py", "任务收尾不恢复前置状态（永远停在「…中」）",
+     '        elif (self._error_status is None and self._running_status is not None\r\n'
+     '              and self._status_text == self._running_status\r\n'
+     '              and self._prev_status is not None):\r\n',
+     '        elif False:                      # 注入：不恢复前置状态（停在"…中"）\r\n',
+     "任务壳：收尾后"),
 ]
 
 

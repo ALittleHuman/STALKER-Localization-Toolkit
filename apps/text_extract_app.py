@@ -559,6 +559,7 @@ class TextExtractApp:
         # 统一任务壳（忙碌标志 / 进度 / 状态文案 / 线程）
         self.task = TaskRunner(
             self.root, self._ui,
+            idle_status="就绪",          # 与 self.status_lbl 的初始文案一致
             on_busy=lambda busy: self.extract_btn.config(
                 state=tk.DISABLED if busy else tk.NORMAL,
                 text="提取中..." if busy else "▶  提取文本"),

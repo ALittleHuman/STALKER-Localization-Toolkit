@@ -148,6 +148,7 @@ class FSToolApp:
         #             而不是把条目计数直接当百分比）。
         self.task = TaskRunner(
             self.root, self._ui,
+            idle_status="就绪",          # 与 self.status_lbl 的初始文案一致
             on_busy=self._set_busy,
             status_setter=lambda text, kind="idle": self.status_lbl.configure(
                 text=text, style=status_style_name(kind)),
