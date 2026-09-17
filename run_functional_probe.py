@@ -2355,6 +2355,65 @@ def test_cross_validate_helpers(tmp):
     check("交叉校验：覆盖率行 + --strict 契约（与套件同一口径）", _coverage_contract)
 
 
+def test_fs_merge_order():
+    """文件系统页的合并语义 = **后者为准**（用户口径 2026-09-17）。
+
+    用户原话："X-Ray 在读取包的时候是从前到后依次读取，那就按后面的为准，最后读散装文件，
+    如果文件有重复就覆盖。"
+
+    旧实现是 first-wins：同名文件保留**先**加载的那份 → 现场 `gamedata.sqzy_patch` 里与
+    `gamedata.sq_base` 同名的文件永远输给 base（已用真包复现）。本锁直接打在 `_Node.merge`
+    上（纯逻辑，不需要 GUI / 真归档），并核对调用点确实按 `self.loaded` 的插入序（＝加载序）
+    合并 —— 少了任何一半，"后者为准"都不成立。
+    """
+    from apps.fs_app import _Node
+
+    def leaf(name, src):
+        n = _Node(name, name, False)
+        n.source = src
+        return n
+
+    def tree(src, names):
+        root = _Node("", "", True)
+        for nm in names:
+            root.add(leaf(nm, src))
+        return root
+
+    # ① 后者为准：同名文件取后并入的那份，`source` 跟着换成"引擎实际会读到的那一份"
+    merged = tree("a.db", ["same.txt", "only_a.txt"])
+    merged.merge(tree("b.db", ["same.txt", "only_b.txt"]))
+    check("文件系统页合并：同名文件后者为准（source 换成后加载的那个包）",
+          lambda: merged.children["same.txt"].source == "b.db")
+    # ② 并集不丢：不是"后一个把整棵树盖掉"
+    check("文件系统页合并：两个包各自独有的文件都还在（合并不是整树覆盖）",
+          lambda: "only_a.txt" in merged.children and "only_b.txt" in merged.children)
+    # ③ 换源时保留原节点的勾选态（用户勾过的东西不能因为重建而丢）
+    merged2 = tree("a.db", ["same.txt"])
+    merged2.children["same.txt"].checked = True
+    merged2.merge(tree("b.db", ["same.txt"]))
+    check("文件系统页合并：换源时保留原节点的勾选态",
+          lambda: merged2.children["same.txt"].source == "b.db"
+          and merged2.children["same.txt"].checked is True)
+    # ④ 同名项类型变化（文件 → 目录）也以后者为准，且目录仍能继续递归合并
+    merged3 = tree("a.db", ["x"])
+    b_root = _Node("", "", True)
+    d = _Node("x", "x", True)
+    d.add(leaf("inside.txt", "b.db"))
+    b_root.add(d)
+    merged3.merge(b_root)
+    check("文件系统页合并：同名项由文件变目录时以后者为准，且目录可递归合并",
+          lambda: merged3.children["x"].is_dir
+          and "inside.txt" in merged3.children["x"].children)
+    # ⑤ 调用点必须按 `self.loaded` 的插入序（＝加载序）合并
+    fs_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apps", "fs_app.py")
+    src = open(fs_py, encoding="utf-8").read()
+    check("文件系统页合并：_rebuild_merged 按 self.loaded 的插入序（＝加载序）逐层合并",
+          lambda: "for root in self.loaded.values(): self.merged.merge(root)" in src)
+    # ⑥ 旧行为（first-wins）不得复活：merge 的默认必须仍是"覆盖"
+    check("文件系统页合并：_Node.merge 默认 replace=True（first-wins 不得复活）",
+          lambda: "def merge(self, other, replace=True):" in src)
+
+
 def main():
     print("=" * 66)
     print("功能完整性验证（全部在临时目录内操作）")
@@ -2374,6 +2433,9 @@ def main():
 
         print("\n[4] 引擎：六格式真实往返")
         test_engine(tmp)
+
+        print("\n[4b] 文件系统页合并语义（后者为准）")
+        test_fs_merge_order()
 
         print("\n[5] 汉化包生成")
         try:

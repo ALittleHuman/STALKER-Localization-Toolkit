@@ -47,14 +47,29 @@ class _Node:
     def add(self, child):
         self.children[child.name] = child
 
-    def merge(self, other):
+    def merge(self, other, replace=True):
+        """把 `other` 子树并入本节点。
+
+        **胜负规则 = 后者为准**（用户口径 2026-09-17）：
+          "X-Ray 在读取包的时候是从前到后依次读取，那就按后面的为准，最后读散装文件，
+           如果文件有重复就覆盖。"
+
+        所以同名项采用**后并入**的那一份，并且它的 `source` 随之成为"引擎实际会读到的那一份"
+        （旧实现是 first-wins：同名文件保留**先**加载的那份，`sqzy_patch` 里的同名文件因此
+        永远输给 `sq_base` —— 那是错的）。
+        勾选态跟随**原来的节点**：用户勾过的文件不能因为重建树而丢失选择。
+        `replace=False` 保留给确实需要 first-wins 的场合（当前无调用方）。
+        """
         for name, child in other.children.items():
-            if name in self.children:
-                cur = self.children[name]
-                if cur.is_dir and child.is_dir:
-                    cur.merge(child)
-            else:
-                self.children[name] = child
+            cur = self.children.get(name)
+            if cur is not None and cur.is_dir and child.is_dir:
+                cur.merge(child, replace=replace)
+                continue
+            if cur is not None and not replace:
+                continue
+            if cur is not None:
+                child.checked = cur.checked
+            self.children[name] = child
 
     def toggle(self, checked):
         self.checked = checked
