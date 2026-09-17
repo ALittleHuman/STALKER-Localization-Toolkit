@@ -26,6 +26,40 @@ import traceback
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# ── 桌面前提：**必须最先判**，而且必须用子进程判 ─────────────────────────────
+# 为什么排在最前：本文件随后要 `import toolkit_base`（在 _patch_dialogs 里），而它在
+#   **导入期**就 enable_hidpi() 并 ensure_package("tkinterdnd2") —— 缺包时那是一条最多
+#   120 秒的 pip，没有桌面的机器上根本不该走到那里。先判前提、直接 SKIP 退出最安全。
+# 为什么用子进程：某些环境里 `tk.Tk()` **既不抛异常也不返回**（2026-09-17 实测：GitHub
+#   runner 上本探针挂满 run_ci 的 600 秒超时）。进程内的看门狗线程救不了 —— Tk 卡在 C 层时
+#   持着 GIL，守护线程被饿死、来不及报信（第一版这么写过，CI 上依旧挂满 600 秒）。
+#   用子进程去试，卡住也由**父进程**的 `timeout=` 收场。
+# 超时秒数可用环境变量 `APP_PROBE_TK_TIMEOUT` 覆盖（默认 20 秒；正常建窗远小于 1 秒）。
+_TK_BOOT_TIMEOUT = float(os.environ.get("APP_PROBE_TK_TIMEOUT", "20"))
+
+
+def _desktop_tk_available():
+    """用子进程试探"能否建出 Tk 根窗口"，返回 (可用, 原因)。"""
+    code = "import tkinter as tk\nr = tk.Tk()\nr.withdraw()\nr.destroy()\n"
+    try:
+        proc = subprocess.run([sys.executable, "-c", code], timeout=_TK_BOOT_TIMEOUT,
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace")
+    except subprocess.TimeoutExpired:
+        return False, "建窗 %.1f 秒未返回（子进程试探超时）" % _TK_BOOT_TIMEOUT
+    except OSError as e:
+        return False, "试探子进程起不来: %s" % e
+    if proc.returncode != 0:
+        last = [ln for ln in (proc.stderr or "").strip().splitlines() if ln.strip()]
+        return False, (last[-1] if last else "试探子进程退出码 %d" % proc.returncode)
+    return True, ""
+
+
+_TK_OK, _TK_WHY = _desktop_tk_available()
+if not _TK_OK:
+    print("SKIP run_app_probe: 无法创建 Tk 根窗口（需要桌面环境）: %s" % _TK_WHY)
+    sys.exit(0)
+
 # ── 对话框打桩：任何弹窗都只记录，绝不阻塞 ──
 _dialogs = []
 
@@ -57,40 +91,9 @@ _patch_dialogs()
 
 import tkinter as tk  # noqa: E402
 
-# 需要桌面：无显示环境按 SKIP 处理（退出码 0），绝不伪装成失败。
-# ★ 三层兜底，缺一不可（2026-09-17 实测教训）：
-#   ① **子进程试探**（主判据）：某些环境里 `tk.Tk()` 既不抛异常也不返回（GitHub runner 上
-#      本探针挂满 run_ci 的 600 秒超时）。进程内的看门狗线程**救不了**这种情形 —— Tk 在 C
-#      层持着 GIL，守护线程被饿死、来不及报信（第一版这么写过，CI 上依旧挂满 600 秒）。
-#      所以用一个**子进程**去试：父进程不会被 Tk 卡住，超时由父进程的 `timeout=` 兜住。
-#   ② 进程内看门狗：兜 `TkinterDnD.Tk()` 那条路（试探只试了纯 tkinter）与其它"建窗卡住"。
-#   ③ try/except：建窗抛异常（无显示、Tcl 初始化失败等）走同一条 SKIP 标识。
-#   超时秒数可用环境变量 `APP_PROBE_TK_TIMEOUT` 覆盖（默认 20 秒；正常建窗远小于 1 秒）。
-_TK_BOOT_TIMEOUT = float(os.environ.get("APP_PROBE_TK_TIMEOUT", "20"))
-
-
-def _desktop_tk_available():
-    """用子进程试探"能否建出 Tk 根窗口"，返回 (可用, 原因)。父进程侧超时，故卡住也能收场。"""
-    code = "import tkinter as tk\nr = tk.Tk()\nr.withdraw()\nr.destroy()\n"
-    try:
-        proc = subprocess.run([sys.executable, "-c", code], timeout=_TK_BOOT_TIMEOUT,
-                              capture_output=True, text=True, encoding="utf-8",
-                              errors="replace")
-    except subprocess.TimeoutExpired:
-        return False, "建窗 %.1f 秒未返回（子进程试探超时）" % _TK_BOOT_TIMEOUT
-    except OSError as e:
-        return False, "试探子进程起不来: %s" % e
-    if proc.returncode != 0:
-        last = [ln for ln in (proc.stderr or "").strip().splitlines() if ln.strip()]
-        return False, (last[-1] if last else "试探子进程退出码 %d" % proc.returncode)
-    return True, ""
-
-
-_TK_OK, _TK_WHY = _desktop_tk_available()
-if not _TK_OK:
-    print("SKIP run_app_probe: 无法创建 Tk 根窗口（需要桌面环境）: %s" % _TK_WHY)
-    sys.exit(0)
-
+# 桌面前提已在文件开头用**子进程试探**判过（必须在 import toolkit_base 之前）。
+# 这里只剩两层兜底：② 进程内看门狗（兜 TkinterDnD 那条路 / 试探通过但建窗卡住）；
+# ③ try/except（建窗抛异常走同一条 SKIP 标识）。
 _TK_BOOT_DONE = threading.Event()
 
 
