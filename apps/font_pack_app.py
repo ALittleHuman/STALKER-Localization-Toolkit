@@ -1,29 +1,62 @@
 # -*- coding: utf-8 -*-
 """汉化包生成 App (FontPackApp)."""
 from apps._bootstrap import (
-    os, threading, tk, ttk, filedialog, messagebox,
+    os, tk, ttk, filedialog, messagebox
 )
 
-from toolkit import T, color, tool_header, dir_row, SplitPane, log_section, _make_pump
-from font_pack import GAMES, ensure_pillow, build_package
+from toolkit import (color, tool_header, dir_row, SplitPane, _make_pump,
+                     AutoScrollbar, guard_wheel,
+                     log_summary, log_detail,
+                     plugin_slot_bar, plugin_entries, errbox,
+                     tool_panel,
+                     TaskRunner, status_style,
+                     themed_entry, themed_listbox, dialog_window,
+                     HOST_FONT, AREA_BOTTOM,
+                     AREA_GAME, AREA_LANG, AREA_SIZE, AREA_SUFFIX,
+                     system_font_dirs, open_in_explorer, px,
+                     load_user_value, save_user_values)
+from font_pack import GAMES, ensure_pillow, build_package, ST_FALLBACK
+
+# 上次用过的字体记在**共用的** user.ltx 里（[font] 段）—— 与视频页的 [ffmpeg] 段同一套
+# 机制（`toolkit_platform` 的读写会保留其它段）。用户口径 2026-09-14：
+# "user 里面还要保存上一次使用的字体，点一次『选择』保存一次。"
+_CFG_SECTION = "font"
 
 class FontPackApp:
-    def __init__(self, root):
-        self.root = root
-        if isinstance(root, tk.Tk):
-            root.title("汉化包生成")
-            root.geometry("860x640")
-            root.minsize(760, 560)
-        root.configure(bg=color("bg"))
+    """汉化包生成。
 
-        self.running = False
-        self._build_ui()
+    统一契约：只接收宿主 Tab（parent）——不自建根窗口、不应用主题、不自建日志面板；
+    日志走全局两级通道（log_summary / log_detail）。
+    """
+
+    def __init__(self, parent):
+        self.root = parent
+        self.root.configure(bg=color("bg"))
+
         self._ui = _make_pump(self.root)
-        self._log("就绪。选择汉化 XML 目录后点击生成。", "dim")
+        # 生成结果标志: 供插件命令的 when={"has_results": ...} 判定 (见 _slot_bar)
+        self._has_results = False
+        self._build_ui()
+        # 统一任务壳：忙碌标志 / 进度 / 状态文案 / 线程
+        self.task = TaskRunner(
+            self.root, self._ui,
+            on_busy=lambda busy: self.gen_btn.configure(
+                state="disabled" if busy else "normal"),
+            status_setter=lambda text, kind="idle": self.status_lbl.configure(
+                text=text, foreground=status_style(kind)),
+            progress_started=self.progress.start,
+            progress_stopped=self.progress.stop,
+        )
+        log_summary("就绪。选择汉化 XML 目录后点击生成。", "dim")
 
     # ─── UI ───
     def _build_ui(self):
         tool_header(self.root, "汉化包生成")
+        # 插件动作区（toolbar 槽；无插件注册时不创建任何控件）
+        # 保存句柄：context 传**可调用对象**，每次 refresh() 重新求值当前状态；
+        # 生成成功后在主线程调 _slot_bar.refresh()，带 when={"has_results": true} 的命令才会出现。
+        self._slot_bar = plugin_slot_bar(self.root, HOST_FONT, app=self,
+                                         context=lambda: {"has_results": self._has_results})
         pad = {"padx": 10, "pady": 4}
         top = ttk.Frame(self.root); top.pack(fill="x", **pad)
 
@@ -31,7 +64,8 @@ class FontPackApp:
         row1 = ttk.Frame(top); row1.pack(fill="x", pady=(0, 4))
         ttk.Label(row1, text="游戏版本:").pack(side="left")
         self.game_var = tk.StringVar(value="SoC")
-        g = ttk.OptionMenu(row1, self.game_var, "SoC", *GAMES.keys())
+        g = ttk.OptionMenu(row1, self.game_var, "SoC", *GAMES.keys(),
+                           *plugin_entries(HOST_FONT, AREA_GAME))
         g.config(width=6); g.pack(side="left", padx=(4, 16))
 
         # 加载语言: eng/rus/chs/自定义 (自定义才显示输入框)
@@ -40,18 +74,18 @@ class FontPackApp:
         self.lang_sel = tk.StringVar(value="chs")
         self.lang_entry = tk.StringVar(value="chs")
         om = ttk.OptionMenu(lang_box, self.lang_sel, "chs", "eng", "rus", "chs", "自定义",
+                            *plugin_entries(HOST_FONT, AREA_LANG),
                             command=self._lang_changed)
         om.config(width=6); om.pack(side="left")
-        self.lang_entry_box = tk.Entry(lang_box, textvariable=self.lang_entry, width=6,
-                                       bg=T["entry_bg"], fg=color("text"), insertbackground=color("text"),
-                                       relief="flat", bd=0, highlightthickness=1,
-                                       highlightbackground=color("border"), highlightcolor=color("accent"), font=color("font"))
+        self.lang_entry_box = themed_entry(lang_box, textvariable=self.lang_entry, width=6,
+                                           font_role="font")
         self.lang_entry_box.pack_forget()  # 默认隐藏, 切自定义才显示
 
         # 尺寸
         ttk.Label(row1, text="尺寸:").pack(side="left")
         self.off_var = tk.StringVar(value="标准")
-        om = ttk.OptionMenu(row1, self.off_var, "标准", "标准", "+3", "+5", "+7", "+9")
+        om = ttk.OptionMenu(row1, self.off_var, "标准", "标准", "+3", "+5", "+7", "+9",
+                            *plugin_entries(HOST_FONT, AREA_SIZE))
         om.config(width=4); om.pack(side="left", padx=(4, 16))
 
         # 字体后缀: 无/_chs/自定义 (自定义才显示输入框)
@@ -60,13 +94,29 @@ class FontPackApp:
         self.suf_sel = tk.StringVar(value="无")
         self.suf_entry = tk.StringVar(value="")
         om = ttk.OptionMenu(suf_box, self.suf_sel, "无", "无", "_chs", "自定义",
+                            *plugin_entries(HOST_FONT, AREA_SUFFIX),
                             command=self._suf_changed)
         om.config(width=6); om.pack(side="left")
-        self.suf_entry_box = tk.Entry(suf_box, textvariable=self.suf_entry, width=6,
-                                      bg=T["entry_bg"], fg=color("text"), insertbackground=color("text"),
-                                      relief="flat", bd=0, highlightthickness=1,
-                                       highlightbackground=color("border"), highlightcolor=color("accent"), font=color("font"))
+        self.suf_entry_box = themed_entry(suf_box, textvariable=self.suf_entry, width=6,
+                                          font_role="font")
         self.suf_entry_box.pack_forget()  # 默认隐藏
+
+        # 完整西里尔: 默认**开**。
+        # 关掉（= "复刻旧包"）会剔除原版 CharAdder 编码 bug 丢失的那 40 个**常用**西里尔，
+        # 而引擎对缺失码位不是留空，而是把整张表填成**同一个字形**
+        # （OGSR `GameFont.cpp:130` `TCMap[i] = vFirstValid`）。在含未翻译俄文的目标
+        # （NLC 等俄文模组）上，这等于满屏重复字形 —— 即"乱码"。
+        # 旧 GUI 默认关，是当初为了与原版整包逐字节一致；以可用性优先，改为默认开。
+        # 控件用**经典 tk.Checkbutton**（不是 ttk）：本仓库另外三处勾选项都是
+        # tk.Checkbutton（convert_app 两处、text_extract_app 一处），配色统一走
+        # toolkit_theme.apply_tk_defaults 里的 `*Checkbutton.*` 选项；ttk 那套走的是
+        # TCheckbutton 样式，是唯一的异类 —— 主题切换时 refresh_theme 也是按
+        # winfo_class()=="Checkbutton" 分支刷新的，ttk 的类名 TCheckbutton 根本不会命中。
+        # 标签只留控件名：说明（关 = 复刻旧包，俄文会缺字）本就是上面这段注释的内容，
+        # 不该挤在勾选项文字里。
+        self.cyr_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(row1, text="完整西里尔",
+                       variable=self.cyr_var).pack(side="left", padx=(0, 16))
 
         # 路径行 (统一 path_row)
         self.xml_var = tk.StringVar()
@@ -76,32 +126,51 @@ class FontPackApp:
         dir_row(top, "字体文件:", self.font_var, browse=self._browse_font, drop=self._on_drop_font)
         dir_row(top, "输出目录:", self.out_var, browse=self._browse_out, drop=self._on_drop_out)
 
-        # 默认字体: 系统微软雅黑优先, 工具目录 msyh.ttf 后备
-        for cand in (r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\msyh.ttf",
-                     r"C:\Windows\Fonts\msyhl.ttc"):
-            if os.path.exists(cand):
-                self.font_var.set(cand); break
+        # 默认字体（优先级从高到低；用户口径 2026-09-14："user 里面还要保存上一次使用的
+        # 字体，点一次『选择』保存一次"）：
+        #   1. **上次用过的**（user.ltx 的 [font] 段，且文件仍存在）；
+        #   2. 系统微软雅黑（msyh.ttc / msyh.ttf / msyhl.ttc）；
+        #   3. 仓库根 msyh.ttf（当前仓库未附带该文件，属预留分支）。
+        # 字体目录由 toolkit_platform.system_font_dirs() 按平台给出，不写死 C:\Windows\Fonts。
+        saved = load_user_value(_CFG_SECTION, "path")
+        if saved and os.path.isfile(saved):
+            self.font_var.set(saved)
         else:
-            local = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "msyh.ttf")
-            if os.path.exists(local):
-                self.font_var.set(local)
+            for _fd in system_font_dirs():
+                for _n in ("msyh.ttc", "msyh.ttf", "msyhl.ttc"):
+                    cand = os.path.join(_fd, _n)
+                    if os.path.exists(cand):
+                        self.font_var.set(cand); break
+                if self.font_var.get():
+                    break
+            if not self.font_var.get():
+                local = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "msyh.ttf")
+                if os.path.exists(local):
+                    self.font_var.set(local)
 
         # 按钮行
         row3 = ttk.Frame(top); row3.pack(fill="x", pady=(6, 0))
         self.gen_btn = ttk.Button(row3, text="生成汉化包", command=self._generate)
         self.gen_btn.pack(side="left")
         ttk.Button(row3, text="打开输出目录", command=self._open_out).pack(side="left", padx=(8, 0))
-        self.status_lbl = tk.Label(row3, text="", bg=color("bg"), fg=color("green"), font=color("font"))
+        self.status_lbl = tk.Label(row3, text="", bg=color("bg"), fg=status_style("idle"), font=color("font"))
         self.status_lbl.pack(side="right")
 
-        # ═══ 可调分区: 日志区 (分隔条拖拽) ═══
-        self._paned = SplitPane(self.root, orient="vertical")
-        self._paned.pack(fill="both", expand=True, padx=10, pady=(2, 8))
-        lower = ttk.Frame(self._paned)
-        self._paned.add(lower, weight=1)
-        self.progress = ttk.Progressbar(lower, mode="indeterminate")
-        self.progress.pack(fill="x", padx=10, pady=(0, 6))
-        self.log_lf, self.log = log_section(lower, "日志", height=12)
+        # ═══ 进度条（日志面板由 Hub 统一提供，工具内不再自建） ═══
+        self.progress = ttk.Progressbar(self.root, mode="indeterminate")
+        self.progress.pack(fill="x", padx=10, pady=(6, 8))
+
+        # ═══ 插件贡献的**底部**面板区（api.register_panel，area=AREA_BOTTOM）═══
+        # 与 AREA_TOP_BAR 的区别是"位置"而不是"机制"：这里在现有控件全部排布**之后**
+        # 用 side=tk.BOTTOM 抢占剩余空腔的底边，于是它是本 Tab 最靠底的插件区
+        # （AREA_TOP_BAR 是插在标题下方）。放在 _build_ui 末尾是**必须的**：
+        # pack 按调用顺序分配，早排进去就会被后来的 top 侧控件挤到中间。
+        # 无插件注册该区域时不创建任何控件，外观与未接插件时完全一致。
+        # side 用 Tk 常量而不是裸字符串：静态守卫按**调用窗口**扫裸槽位名，而这里的
+        # bottom 是 pack 的贴边值、不是 area —— 写常量既更贴 Tk 习惯，也不必为此放宽
+        # toolkit_guard.RAW_AREA_RE 里 AREA_BOTTOM 的保护（那会连带漏掉裸 area）。
+        tool_panel(self.root, HOST_FONT, AREA_BOTTOM, app=self,
+                   pack_kw={"side": tk.BOTTOM, "fill": "x", "padx": 10, "pady": (0, 8)})
 
     # ─── 逻辑 ───
     @staticmethod
@@ -151,65 +220,104 @@ class FontPackApp:
             self.suf_entry.set("")
             self.suf_entry_box.pack_forget()
 
-    def _log(self, msg, tag=None):
-        self._ui(lambda: self.log.add(msg, tag))
+    # 日志统一走全局通道（log_summary / log_detail），不再自建 LogBox
 
     def _browse_xml(self):
         d = filedialog.askdirectory(title="选择汉化 XML 目录 (xmlfiles)")
         if d: self.xml_var.set(d)
 
+    def _dropped_paths(self, event):
+        """tkdnd 的 event.data → 路径列表。
+
+        多选时数据形如 `{C:\\a.ttf} {C:\\b.ttf}`（含空格/中文时带花括号），
+        原先的 `event.data.strip("{}")` 只去掉**最外层**首尾花括号，会得到
+        `C:\\a.ttf} C:\\b.ttf` 这种既非文件也非目录的字符串，于是多文件拖放
+        被静默忽略。tk 的 splitlist 才是官方解析方式（与 fs_app/text_extract 口径一致）。
+        """
+        data = str(getattr(event, "data", "") or "").strip()
+        if not data:
+            return []
+        try:
+            items = list(self.root.tk.splitlist(data))
+        except Exception:
+            items = [data]
+        paths = [p for p in (str(i).strip().strip("{}").strip() for i in items) if p]
+        if paths and not any(os.path.exists(p) for p in paths):
+            # 兜底: 若 tkdnd 给的是**未加花括号**的裸路径（Tcl 会把路径里的
+            # `\a`/`\b`/`\n`/`\t` 当反斜杠转义吃掉, 如 C:\a\b.ttf → C:<BEL><BS>.ttf），
+            # 而原始串本身确实是存在的路径, 就采信原始串。
+            raw_path = data.strip("{}").strip()
+            if raw_path and os.path.exists(raw_path):
+                return [raw_path]
+        return paths
+
     def _on_drop_xml(self, event):
-        """拖拽文件夹到 XML 目录框."""
-        path = event.data.strip("{}").strip()
-        if os.path.isdir(path):
-            self.xml_var.set(path)
+        """拖拽文件夹到 XML 目录框（多选时取第一个目录）。"""
+        paths = self._dropped_paths(event)
+        dirs = [p for p in paths if os.path.isdir(p)]
+        if dirs:
+            self.xml_var.set(dirs[0])
+        else:
+            log_summary("拖放的项不是目录（XML 目录需要 xmlfiles 文件夹）: "
+                        f"{paths[0] if paths else '空的拖放数据'}", "warn")
 
     def _on_drop_font(self, event):
-        """拖拽字体文件到字体框."""
-        path = event.data.strip("{}").strip()
-        if os.path.isfile(path) and path.lower().endswith((".ttf", ".ttc", ".otf")):
-            self.font_var.set(path)
+        """拖拽字体文件到字体框（多选时取第一个 .ttf/.ttc/.otf）。"""
+        paths = self._dropped_paths(event)
+        fonts = [p for p in paths
+                 if os.path.isfile(p) and p.lower().endswith((".ttf", ".ttc", ".otf"))]
+        if fonts:
+            self.font_var.set(fonts[0])
+        else:
+            log_summary("拖放的项不是字体文件（需要 .ttf/.ttc/.otf）: "
+                        f"{paths[0] if paths else '空的拖放数据'}", "warn")
 
     def _on_drop_out(self, event):
-        """拖拽文件夹到输出目录框."""
-        path = event.data.strip("{}").strip()
-        if os.path.isdir(path):
-            self.out_var.set(path)
+        """拖拽文件夹到输出目录框（多选时取第一个目录）。"""
+        paths = self._dropped_paths(event)
+        dirs = [p for p in paths if os.path.isdir(p)]
+        if dirs:
+            self.out_var.set(dirs[0])
+        else:
+            log_summary("拖放的项不是目录（输出目录需要一个文件夹）: "
+                        f"{paths[0] if paths else '空的拖放数据'}", "warn")
 
     def _browse_font(self):
-        """自建字体选择器: 列出 C:\\Windows\\Fonts 全部 ttf/ttc/otf + 当前字体目录."""
+        """自建字体选择器: 列出系统字体目录全部 ttf/ttc/otf + 当前字体目录."""
         import fnmatch as _fnm
         if not hasattr(self, "_font_cjk"):
             self._font_cjk = {}
-        win = tk.Toplevel(self.root)
-        win.title("选择字体文件")
-        win.geometry("900x520")
-        win.configure(bg=color("bg"))
-        win.transient(self.root)
+        win = dialog_window(self.root, "选择字体文件", size="900x520")
 
         bar = ttk.Frame(win); bar.pack(fill="x", padx=10, pady=(10, 4))
         ttk.Label(bar, text="过滤:").pack(side="left")
         kw_var = tk.StringVar()
-        kw_entry = tk.Entry(bar, textvariable=kw_var, bg=color("entry_bg"), fg=color("text"),
-                            insertbackground=color("text"))
+        kw_entry = themed_entry(bar, textvariable=kw_var)
         kw_entry.pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+        # 图例: 列表里的裸符号原先没有任何说明, 且"检测失败"与"缺字形"混为一谈。
+        # 精简口径：只保留"符号 = 什么意思"，判据细节（包围盒全同 / notdef 方块）属实现，
+        # 用户不需要在界面上读 —— 那部分在下面的代码注释与本文件的 docstring 里。
+        ttk.Label(win, text="图例: ✓ 含中文字形 · ⚠ 疑似缺字形 · ? 检测失败（与字体无关）",
+                  style="Dim.TLabel", wraplength=860).pack(fill="x", padx=10, pady=(0, 4))
 
         body = SplitPane(win, orient="horizontal")
         body.pack(fill="both", expand=True, padx=10)
-        list_frame = ttk.Frame(body)
-        body.add(list_frame, weight=3)
-        lb = tk.Listbox(list_frame, bg=color("entry_bg"), fg=color("text"),
-                        selectbackground=color("selected"), selectforeground=color("text_bright"),
-                        font=color("font"), relief="flat", bd=0, highlightthickness=1,
-                        highlightbackground=color("border"), highlightcolor=color("accent"))
-        sb = ttk.Scrollbar(list_frame, orient="vertical", command=lb.yview)
+        # 两个窗格都是**裁剪式**（用户口径 2026-09-13）：拖分隔条时各自的远侧边框不动、
+        # 内容左对齐，窄到装不下就出横向滚动条，而不是把里面的控件压扁。
+        # 容器是视口的 content，控件要自己 pack 进去（原来由 Panedwindow 代管）。
+        list_frame = ttk.Frame(body.add_clipped(weight=3))
+        list_frame.pack(fill="both", expand=True)
+        lb = themed_listbox(list_frame)
+        sb = AutoScrollbar(list_frame, orient="vertical", command=lb.yview)
+        guard_wheel(lb, sb)          # Listbox 类绑定不看我们的条子
         lb.configure(yscrollcommand=sb.set)
         lb.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
 
-        # 右侧预览区 (可拖拽分隔条调宽度)
-        pv = ttk.Frame(body)
-        body.add(pv, weight=2)
+        # 右侧预览区 (可拖拽分隔条调宽度；同样裁剪，见上)
+        pv = ttk.Frame(body.add_clipped(weight=2))
+        pv.pack(fill="both", expand=True)
         pv_top = ttk.Frame(pv)
         pv_top.grid(row=0, column=0, columnspan=2, sticky="ew")
         ttk.Label(pv_top, text="预览", style="Dim.TLabel").pack(side="left")
@@ -221,10 +329,10 @@ class FontPackApp:
         # Canvas 预览区 (宽度随分隔条自适应, 支持滚动查看放大细节)
         pv.columnconfigure(0, weight=1)
         pv.rowconfigure(1, weight=1)
-        pv_canvas = tk.Canvas(pv, bg=color("bg"), height=250,
+        pv_canvas = tk.Canvas(pv, bg=color("bg"), height=px(250),
                               highlightthickness=1, highlightbackground=color("border"))
-        pv_sb_v = ttk.Scrollbar(pv, orient="vertical", command=pv_canvas.yview)
-        pv_sb_h = ttk.Scrollbar(pv, orient="horizontal", command=pv_canvas.xview)
+        pv_sb_v = AutoScrollbar(pv, orient="vertical", command=pv_canvas.yview)
+        pv_sb_h = AutoScrollbar(pv, orient="horizontal", command=pv_canvas.xview)
         pv_canvas.configure(yscrollcommand=pv_sb_v.set, xscrollcommand=pv_sb_h.set)
         pv_canvas.grid(row=1, column=0, sticky="nsew")
         pv_sb_v.grid(row=1, column=1, sticky="ns")
@@ -235,47 +343,136 @@ class FontPackApp:
                          lambda e: pv_canvas.configure(scrollregion=pv_canvas.bbox("all")))
         pv_name = ttk.Label(pv, text="", style="Dim.TLabel", wraplength=380)
         pv_name.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        pv_name.bind("<Configure>",
-                     lambda e: pv_name.configure(wraplength=max(80, pv_name.winfo_width())))
+
+        def _wrap_name(_=None):
+            """描述文字按**窗格可用宽度**换行。
+
+            原来绑在它自己的 `<Configure>` 上取 `winfo_width()`：布局早期那是 1，
+            被 `max(80, …)` 兜住 → 一个字符一行（用户实测"换行如此拉跨"）。
+            改成由容器宽度驱动，并给一个真正可读的下限。
+            """
+            try:
+                avail = pv.winfo_width() - 16
+            except Exception:
+                avail = 380
+            try:
+                pv_name.configure(wraplength=max(160, avail))
+            except Exception:
+                pass
+        pv.bind("<Configure>", _wrap_name)
+        win.after_idle(_wrap_name)
         win.bind("<Configure>",
                  lambda e: pv_canvas.configure(width=max(120, pv_canvas.winfo_width())))
 
-        def quick_detect(path):
-            """快速中文字形检测: 逐字符取字形包围盒, 多个不同 bbox = 真实字形
-            (notdef 缺字形对全部字符渲染同一方块, bbox 全相同). 0.1ms/字体级."""
+        # 唯一的字形判定: 返回 "ok" / "japanese" / "missing" / "unknown"。
+        # 列表标记与预览标题**共用**这一判据, 避免同一字体两处结论互相矛盾。
+        CJK_MARK = {"ok": "✓ 中文",
+                    "japanese": "⚠ 日语字体（缺简体→用繁体）",
+                    "missing": "⚠ 疑似缺字形",
+                    "unknown": "? 检测失败"}
+
+        # 判据样本（2026-09-14 修正）：必须混入**简体特有**的字。
+        # 为什么必须改：老样本是 "永你好汉化测"，而它把 `getbbox() is None`（取不到字形）
+        # 的字**直接跳过** —— 日文字体 hpsimplifiedjpan 有 永/你/好/化、没有 汉/测，
+        # 于是"不同 bbox 数 = 4 > 1"照样判 ✓ 中文，可预览里那几个字是**整字宽的空洞**
+        # （用户实测的矛盾："列表标 ✓ 中文，预览却缺常用字"）。
+        # 现在：简体字只要缺一个就判 missing（fail-closed），"全部 bbox 相同"（notdef
+        # 方块）也判 missing。
+        CJK_SAMPLE = "永你好汉化测试这说们书见风"
+
+        def sample_missing(path):
+            """样本里**取不到字形**的字（供预览标题解释"到底缺哪些字"）。"""
+            out = []
+            try:
+                from PIL import ImageFont as _PIF
+                font = _PIF.truetype(path, 40)
+                for ch in CJK_SAMPLE:
+                    if font.getmask(ch).getbbox() is None:
+                        out.append(ch)
+            except Exception:
+                pass
+            return out
+
+        def sample_fallback(path):
+            """缺字形的样本字里**能用繁体字形顶上**的那些：{简体: 繁体}。
+
+            用户口径 2026-09-14："日语的，标明是日语字体，然后那些缺简体的就上繁体。"
+            判据 = 该字在 `st_fallback.json` 里有繁体替代**且字体真画得出那个繁体字形**
+            （只按表替换会把"表里有、字体也没有"的字也标成可补）。
+            """
+            out = {}
+            try:
+                from PIL import ImageFont as _PIF
+                font = _PIF.truetype(path, 40)
+                for ch in sample_missing(path):
+                    alt = ST_FALLBACK.get(ch)
+                    if alt and font.getmask(alt).getbbox() is not None:
+                        out[ch] = alt
+            except Exception:
+                pass
+            return out
+
+        def glyph_status(path):
+            """中文字形判定的唯一判据：逐字符取字形包围盒。
+
+            四态（列表标记与预览标题**共用**这一判据，避免两处结论互相矛盾）：
+              * "ok"       —— 样本里每个字都取到字形，且不同 bbox 数 > 1；
+              * "japanese" —— 有简体字取不到字形，但**缺的那些都能用繁体字形顶上**
+                              （日文字体 hpsimplifiedjpan 的典型形态：按 JIS 收字，没有
+                              简体专有形却有繁体形）。这不是"坏字体"，不能与 missing
+                              混为一谈 —— 用户要的就是"标明是日语字体"。
+              * "missing" —— 有简体字连繁体替代也补不出来（fail-closed），或 bbox 全同
+                             （该字体对什么字都画同一个 notdef 方块）；
+              * "unknown" —— **检测失败**（PIL 缺失 / 字体无法解析），与"字体缺字形"
+                             不是一回事，界面上必须分开显示。
+            """
             try:
                 from PIL import ImageFont as _PIF
                 font = _PIF.truetype(path, 40)
                 boxes = set()
-                for ch in "永你好汉化测":
-                    try:
-                        b = font.getmask(ch).getbbox()
-                    except Exception:
-                        return False
+                for ch in CJK_SAMPLE:
+                    b = font.getmask(ch).getbbox()
                     if b is None:
-                        continue
+                        # 缺简体字：缺的那些全能用繁体顶上 → 日语/繁体字体；否则真缺
+                        return "japanese" if sample_fallback(path) else "missing"
                     boxes.add(b)
-                return len(boxes) > 1
+                return "ok" if len(boxes) > 1 else "missing"
             except Exception:
-                return False
+                return "unknown"
 
-        def detect_all(start=0, batch=24):
-            """分片批量检测字体, 完成后整体重填带标记列表 (Listbox 不支持单条改文本)."""
+        def cached_status(path):
+            """带缓存的判定（缓存跨对话框复用, 避免重复解析字体文件）。"""
+            cache = self._font_cjk
+            st = cache.get(path)
+            if st not in CJK_MARK:
+                st = cache[path] = glyph_status(path)
+            return st
+
+        def detect_all(start=0, gen=None, batch=24):
+            """分片批量检测字体, 完成后整体重填带标记列表 (Listbox 不支持单条改文本).
+
+            gen 是检测链代次: 过滤框每敲一个字符 refresh() 就 +1, 旧链在下一片
+            发现代次不符即中止 —— 否则系统字体数百个时会多条链并发重填列表。
+            """
+            if gen != getattr(win, "_detect_gen", 0):
+                return
             items = getattr(win, "font_items", [])
             cache = self._font_cjk
             end = min(start + batch, len(items))
             for i in range(start, end):
                 path = items[i]
-                if path not in cache:
-                    cache[path] = quick_detect(path)
+                if cache.get(path) not in CJK_MARK:
+                    cache[path] = glyph_status(path)
+            if gen != getattr(win, "_detect_gen", 0) or not win.winfo_exists():
+                return
             if end < len(items):
-                win.after(25, lambda: detect_all(end))
+                win.after(25, lambda: detect_all(end, gen))
             else:
                 # 全部完成: 整体重填带标记 + 恢复选中当前字体
                 cur = self.font_var.get().strip()
                 lb.delete(0, "end")
                 for path in items:
-                    mark = "✓ 中文" if cache.get(path) else "⚠"
+                    mark = CJK_MARK[cache.get(path, "unknown")]
                     lb.insert("end", f"{os.path.basename(path)}  [{os.path.dirname(path)}]  {mark}")
                 if cur in items:
                     idx = items.index(cur)
@@ -288,7 +485,7 @@ class FontPackApp:
             kw = kw_var.get().strip().lower()
             lb.delete(0, "end")
             font_items = []
-            dirs = [r"C:\Windows\Fonts"]
+            dirs = list(system_font_dirs())
             cur = self.font_var.get().strip()
             if cur and os.path.isdir(os.path.dirname(cur)):
                 d2 = os.path.dirname(cur)
@@ -313,8 +510,11 @@ class FontPackApp:
                     font_items.append(full)
                     lb.insert("end", f"{n}  [{d}]")
             win.font_items = font_items
-            # 后台分片自动识别中文字形
-            win.after_idle(lambda: detect_all(0))
+            # 后台分片自动识别中文字形。代次 +1 让上一次 filtering 触发的旧检测链作废:
+            # 过滤框每敲一个字符都会走到这里, 旧链若不停会并发重填列表并反复重置选中项。
+            win._detect_gen = getattr(win, "_detect_gen", 0) + 1
+            gen = win._detect_gen
+            win.after_idle(lambda: detect_all(0, gen))
             # 定位当前字体 (若有)
             cur = self.font_var.get().strip()
             if cur in font_items:
@@ -330,39 +530,81 @@ class FontPackApp:
             show_preview()
 
         def show_preview(_=None):
-            """选中字体时用 PIL 渲染预览文字 (支持缩放), 多字墨迹极差检测中文字形."""
+            """选中字体时渲染预览（**图随内容增长**，缩放才真的有用）。
+
+            本轮修的两件事（用户实测 2026-09-14）：
+              ① 原来是固定 `330x130` 的图 + 按 zoom 只放大**字号** → 字一大就被裁掉，
+                 看起来"只有左上角一小块、缩放没什么卵用"。现在按文字实际尺寸出图，
+                 画布滚动条随之可用（放大 = 整张图变大，而不是把字挤进固定框）。
+              ② 缺字形的字在标题里点出来（"缺: 汉测"），不再让人猜预览里那排空洞是什么 ——
+                 那是"这个字体确实没有这些简体字"，不是渲染坏了。
+            追加（同一天，用户口径"日语的，标明是日语字体，然后那些缺简体的就上繁体"）：
+              ③ 判为 `japanese`（缺的简体字都能用繁体顶上）时，标题**标明是日语字体**，
+                 并列出"简体→繁体"的对应；预览行**直接用繁体字形显示**这些字
+                 （否则那几格是空白/方框，用户看到的还是"缺字"）。
+
+            中文字形结论与列表标记**同源**（cached_status → glyph_status）。
+            """
             sel = lb.curselection()
             items = getattr(win, "font_items", [])
             if not sel or not (0 <= sel[0] < len(items)):
                 return
             path = items[sel[0]]
+            st = cached_status(path)
+            subs = sample_fallback(path) if st == "japanese" else {}
+            if st == "japanese":
+                pairs = "、".join("%s→%s" % (a, b) for a, b in subs.items())
+                warn = ("  ⚠ 日语字体（缺 %d 个简体字，预览已用繁体字形显示：%s）"
+                        % (len(subs), pairs))
+            elif st == "missing":
+                miss = "".join(sample_missing(path))
+                warn = "  ⚠ 疑似缺中文字形（字形判据%s）" % (("：缺 " + miss) if miss else "")
+            elif st == "unknown":
+                warn = "  ? 检测失败（PIL 不可用或字体无法解析）"
+            else:
+                warn = ""
             try:
                 from PIL import Image, ImageDraw, ImageFont as _PIF, ImageTk
-                size = int(40 * zoom["v"])
+                size = max(12, int(40 * zoom["v"]))
                 font = _PIF.truetype(path, size)
-                img = Image.new("RGB", (330, 130), color("bg"))
+                line1, line2 = "汉化测试你好ABC", "Привет 世界 123"
+                if subs:                      # ★ 缺简体的字换成繁体字形再画（用户口径）
+                    line1 = "".join(subs.get(c, c) for c in line1)
+                    line2 = "".join(subs.get(c, c) for c in line2)
+                asc, desc = font.getmetrics()
+                line_h = asc + desc
+                pad = max(8, size // 3)
+                text_w = max(font.getlength(line1), font.getlength(line2))
+                try:
+                    avail = max(0, int(pv_canvas.winfo_width()) - 2 * pad - 8)
+                except Exception:
+                    avail = 0
+                w = int(max(text_w, avail) + 2 * pad)
+                h = int(2 * line_h + 3 * pad)
+                img = Image.new("RGB", (w, h), color("bg"))
                 d = ImageDraw.Draw(img)
-                d.text((12, 10), "汉化测试你好ABC", font=font, fill=color("text"))
-                d.text((12, 62), "Привет 世界 123", font=font, fill=color("text_dim"))
+                d.text((pad, pad), line1, font=font, fill=color("text"))
+                d.text((pad, pad + line_h + pad // 2), line2, font=font,
+                       fill=color("text_dim"))
                 photo = ImageTk.PhotoImage(img)
                 preview_lbl.configure(image=photo)
-                preview_lbl.image = photo
-                # 中文字形检测: 逐字渲染"永你好"墨迹极差, notdef 方块全部相同 (极差≈0)
-                ratios = []
-                for ch in "永你好":
-                    img2 = Image.new("L", (80, 80), 245)
-                    d2 = ImageDraw.Draw(img2)
-                    d2.text((4, 4), ch, font=font, fill=0)
-                    px = img2.load()
-                    dark = sum(1 for y in range(80) for x in range(80) if px[x, y] < 200)
-                    ratios.append(dark / (80 * 80))
-                rng = max(ratios) - min(ratios)
-                # 三档: notdef 方块极差严格≈0 (0.000); 真字体极差 >0.008; 细笔手写体介于其间 (不误伤)
-                warn = "  ⚠ 可能不含中文字形" if rng <= 0.001 else ""
+                preview_lbl.image = photo          # 保住引用，否则图会被 GC 掉
+                pv_canvas.configure(scrollregion=(0, 0, w + 8, h + 8))
                 pv_name.configure(text=f"{os.path.basename(path)}  [{font.getname()[0]}]{warn}")
             except Exception:
                 preview_lbl.configure(image="")
-                pv_name.configure(text=f"{os.path.basename(path)}  (预览失败)")
+                pv_name.configure(text=f"{os.path.basename(path)}  (预览失败){warn}")
+
+        def _remember_font(path):
+            """记住这次选的字体（写 user.ltx 的 [font] 段，保留其它段）。
+
+            用户口径："user 里面还要保存上一次使用的字体，点一次『选择』保存一次。"
+            """
+            try:
+                if not save_user_values(_CFG_SECTION, {"path": path}):
+                    log_summary("警告: 无法写入 user.ltx，下次启动需重新选择字体", "warn")
+            except Exception as e:
+                log_summary(f"记住字体失败：{e}", "warn")
 
         def pick(_=None):
             sel = lb.curselection()
@@ -371,15 +613,22 @@ class FontPackApp:
             items = getattr(win, "font_items", [])
             if 0 <= sel[0] < len(items):
                 self.font_var.set(items[sel[0]])
+                _remember_font(items[sel[0]])
                 win.destroy()
 
         def browse_other():
-            f = filedialog.askopenfilename(title="选择字体文件",
-                                           initialdir=os.path.dirname(self.font_var.get())
-                                           if self.font_var.get() else r"C:\Windows\Fonts",
-                                           filetypes=[("字体文件", "*.ttf *.ttc *.otf"), ("所有文件", "*.*")])
+            # 初始目录同样取自 toolkit_platform（不再写死 C:\Windows\Fonts）
+            font_dirs = system_font_dirs()
+            f = filedialog.askopenfilename(
+                title="选择字体文件",
+                initialdir=os.path.dirname(self.font_var.get())
+                if self.font_var.get() else (font_dirs[0] if font_dirs else ""),
+                filetypes=[("字体文件", "*.ttf *.ttc *.otf"), ("所有文件", "*.*")])
             if f:
                 self.font_var.set(f)
+                # 从"浏览其他目录"选的也是用户的选择，同样记住（否则这条入口就成了
+                # "选了但下次还得再选一次"，与用户要的"保存上一次使用的字体"不一致）
+                _remember_font(f)
                 win.destroy()
 
         btn_bar = ttk.Frame(win); btn_bar.pack(fill="x", padx=10, pady=8)
@@ -399,13 +648,18 @@ class FontPackApp:
 
     def _open_out(self):
         d = self.out_var.get().strip()
-        if d and os.path.isdir(d):
-            os.startfile(d)  # noqa
-        else:
+        if not d or not os.path.isdir(d):
             messagebox.showwarning("提示", "输出目录无效")
+            return
+        # open_in_explorer 失败返回 False（权限/文件管理器关联缺失）；原先忽略返回值，
+        # 于是点了按钮毫无反馈，用户以为工具没反应。
+        if not open_in_explorer(d):
+            messagebox.showwarning("打开失败",
+                                   f"无法在文件管理器中打开：\n{d}\n"
+                                   "（可能缺少文件管理器关联或权限不足，请手动打开该目录）")
 
     def _generate(self):
-        if self.running: return
+        if self.task.running: return
         xml_dir = self.xml_var.get().strip()
         font = self.font_var.get().strip()
         out = self.out_var.get().strip()
@@ -429,34 +683,48 @@ class FontPackApp:
             messagebox.showwarning("缺少字体", "请选择 TrueType 字体文件 (如 msyh.ttf)"); return
         if not out:
             messagebox.showwarning("缺少输出", "请选择输出目录"); return
-        if not ensure_pillow():
-            errbox("依赖缺失", "Pillow 安装失败，无法渲染字体"); return
+        # 注意：依赖检查/安装**不在这里**做 —— `ensure_pillow()` 在缺 Pillow 时会跑
+        # `pip install pillow`（timeout=180），放在 UI 线程里就是界面冻死最长 3 分钟且
+        # 没有任何进度提示（看起来像崩了）。它现在在 work() 里（工作线程）执行。
 
-        self.running = True
-        self.gen_btn.configure(state="disabled")
-        self.progress.start(12)
-        self.status_lbl.configure(text="生成中...", foreground=color("yellow"))
         game = self.game_var.get()
         off_txt = self.off_var.get()
         offset = int(off_txt[1:]) if off_txt.startswith("+") else 0
-        full_cyr = True  # 默认完整西里尔支持
-        self._log(f"开始生成: GAME={game}, 加载语言={lang}, 后缀={suffix!r}, 尺寸=+{offset}, 完整西里尔={full_cyr}", "hdr")
+        full_cyr = self.cyr_var.get()   # 默认开 = 保留完整西里尔（关掉 = 复刻旧包）
+        log_summary(f"开始生成: GAME={game}, 加载语言={lang}, 后缀={suffix!r}, 尺寸=+{offset}, 完整西里尔={full_cyr}", "hdr")
 
         def work():
-            try:
-                build_package(game, lang, xml_dir, font, out, suffix=suffix,
-                              offset=offset, full_cyrillic=full_cyr, log=self._log)
-                self._ui(lambda: self.status_lbl.configure(text="完成", foreground=color("green")))
-            except Exception as e:
-                self._log(f"错误: {e}", "err")
-                self._ui(lambda: self.status_lbl.configure(text="失败", foreground=color("red")))
-            self._ui(self._done)
+            # 依赖检查/安装放在**工作线程**里（见上面注释）：缺 Pillow 时这是最长 180 秒的
+            # `pip install`，占着 UI 线程就是"点了没反应"。失败抛出去由 TaskRunner 记录并弹错。
+            if not ensure_pillow():
+                raise RuntimeError("Pillow 不可用，无法渲染字体"
+                                   "（需要能访问 PyPI，或先手工执行 pip install pillow）")
+            # 逐条目过程写「详细日志」（只落盘）：GUI 只显示开始/完成/错误
+            build_package(game, lang, xml_dir, font, out, suffix=suffix,
+                          offset=offset, full_cyrillic=full_cyr, log=log_detail)
+            log_detail(f"  生成完成: GAME={game} 语言={lang} 后缀={suffix!r} 尺寸=+{offset} → {out}")
+            # 成功收尾必须回主线程（refresh 会建/销毁 Tk 控件）
+            self._ui(self._mark_generated)
 
-        threading.Thread(target=work, daemon=True).start()
+        # 忙碌态/进度/按钮复位/收尾状态全部由 TaskRunner 在主线程统一处理；
+        # 失败只改状态、**不再写 summary**：TaskRunner._wrapper 在 on_error 之后
+        # 自己会写一条 `后台任务失败: ...`，这里再写就会出现两行同一异常。
+        def _failed(e):
+            self.task.set_status("失败", "err")
+            # 弹窗给出原因：依赖装不上、字体不合格、磁盘写失败等都在这一步暴露。
+            # （日志只由 TaskRunner 写一条 `后台任务失败: ...`，这里不重复写 summary。）
+            errbox("生成失败", str(e))
 
-    def _done(self):
-        self.running = False
-        self.gen_btn.configure(state="normal")
-        self.progress.stop()
+        self.task.run(work, status="生成中...", on_error=_failed,
+                      final_status=("完成", "ok"))
+
+    def _mark_generated(self):
+        """生成成功（已由 _ui 投递回主线程）：置位结果标志并重算插件动作区。
+
+        has_results 原先是构造时写死的 dict 快照，带 when 的插件命令永远不出现；
+        现在 context 是 lambda，refresh() 会重新求值。
+        """
+        self._has_results = True
+        self._slot_bar.refresh()
 
 

@@ -9,7 +9,7 @@ App 公共引导模块。
 各 App 用法：
     from apps._bootstrap import (
         os, sys, re, threading, struct, shutil, subprocess, tempfile, time, json, glob,
-        datetime, dataclass, field, Path, Counter,
+        atexit, datetime, dataclass, field, Path, Counter,
         Optional, List, Dict, Set, Tuple, Union, Any, Callable,
         ET, tk, ttk, filedialog, messagebox, scrolledtext,
     )
@@ -17,6 +17,7 @@ App 公共引导模块。
 import os
 import sys
 import re
+import atexit
 import threading
 import struct
 import shutil
@@ -41,3 +42,16 @@ for _sub in ("file_system", "font_pack", "plugins"):
     _p = os.path.join(_BASE_DIR, _sub)
     if os.path.isdir(_p) and _p not in sys.path:
         sys.path.insert(0, _p)
+
+# 本模块是**转发层**：下面的名字是给各 App `from apps._bootstrap import ...` 用的，
+# 在本文件内"未使用"属设计使然。显式声明 __all__ 有两个好处：
+#   1. 静态检查（pyflakes 视 __all__ 里的名字为已使用）不再对整文件报"未用导入"，
+#      于是"有没有真的漏掉一个名字"这件事才看得清；
+#   2. 转发清单从"散在 comments 里"变成可机读的对外接口。
+__all__ = [
+    "os", "sys", "re", "atexit", "threading", "struct", "shutil", "subprocess",
+    "tempfile", "time", "json", "glob",
+    "datetime", "dataclass", "field", "Path", "Counter",
+    "Optional", "List", "Dict", "Set", "Tuple", "Union", "Any", "Callable",
+    "ET", "tk", "ttk", "filedialog", "messagebox", "scrolledtext",
+]
