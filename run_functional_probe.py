@@ -2414,6 +2414,66 @@ def test_fs_merge_order():
           lambda: "def merge(self, other, replace=True):" in src)
 
 
+def test_sqfs_dir_entries(tmp):
+    """SquashFS 封包：**目录必须写成 tar 的目录条目**。
+
+    旧实现无视条目里的 `is_dir`，把目录当成 0 字节普通文件塞进 tar —— 打完的镜像里目录变成
+    空文件，解出来的目录结构就废了（潜伏 bug，2026-09-17 查出）。这里不调外部工具：拦下
+    `subprocess.run`，直接解析喂给 `tar2sqfs` 的 tar 字节，断言成员类型与内容。
+    """
+    import io as _io
+    import subprocess as _sp
+    import tarfile as _tarfile
+    from file_system import stalker_fs
+
+    if not stalker_fs._find_sqfs_tool():
+        skip("SquashFS 封包目录条目", "本机没有 squashfs-tools-ng")
+        return
+
+    captured = {}
+    real_run = _sp.run
+
+    def fake_run(cmd, **kw):
+        stdin = kw.get("stdin")
+        if stdin is not None:
+            captured["tar"] = stdin.read()
+
+        class _R:
+            returncode = 0
+        return _R()
+
+    _sp.run = fake_run
+    try:
+        stalker_fs.sqfs_pack([("dir", b"", True), ("dir/file.txt", b"hello", False)],
+                             os.path.join(tmp, "dirtest.sq"))
+    finally:
+        _sp.run = real_run
+
+    check("SquashFS 封包：确实把 tar 喂给了 tar2sqfs", lambda: "tar" in captured)
+    if "tar" not in captured:
+        return
+    with _tarfile.open(fileobj=_io.BytesIO(captured["tar"]), mode="r") as tar:
+        members = {m.name: m for m in tar.getmembers()}
+        blob = {m.name: (tar.extractfile(m).read() if tar.extractfile(m) else b"")
+                for m in tar.getmembers() if not m.isdir()}
+
+    def _dir_is_dirtype():
+        m = members.get("dir/") or members.get("dir")
+        assert m is not None, "目录条目不见了：%r" % sorted(members)
+        assert m.isdir(), "目录被写成了普通文件（isdir=False，旧 bug 复活）"
+        return True
+
+    check("SquashFS 封包：目录条目是 DIRTYPE（不是 0 字节普通文件）", _dir_is_dirtype)
+
+    def _file_kept():
+        m = members.get("dir/file.txt")
+        assert m is not None and not m.isdir(), "普通文件条目不对：%r" % (m,)
+        assert blob.get("dir/file.txt") == b"hello", "文件内容没保住：%r" % (blob,)
+        return True
+
+    check("SquashFS 封包：同镜像里的普通文件内容与大小不变", _file_kept)
+
+
 def main():
     print("=" * 66)
     print("功能完整性验证（全部在临时目录内操作）")
@@ -2436,6 +2496,9 @@ def main():
 
         print("\n[4b] 文件系统页合并语义（后者为准）")
         test_fs_merge_order()
+
+        print("\n[4c] SquashFS 封包：目录条目")
+        test_sqfs_dir_entries(tmp)
 
         print("\n[5] 汉化包生成")
         try:
