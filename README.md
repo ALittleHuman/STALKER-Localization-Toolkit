@@ -3,7 +3,7 @@
 潜行者（S.T.A.L.K.E.R.）模组汉化与本地化工具集，面向 SoC / CS / CoP 三部曲及主流模组。
 六个图形化工具统一在一个 Hub 中运行：**文件系统、编码转换、文本提取、XML 校对、OGM 视频转换、汉化包生成**。
 
-当前发行版：**1.1.0**（build_58）· 更新内容见 [CHANGELOG.md](CHANGELOG.md)
+当前发行版：**1.1.0**（build_60）· 更新内容见 [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
@@ -99,7 +99,7 @@ PRERELEASE_COUNTS = {...}         # 标记序号，键 "<完整版本>|<标记�
 **命名规则：外层目录不带版本号，版本号进内侧应用名。**
 
 ```
-builds\build_58\                                    ← 外层恒为 build_N（编号来自 BUILD_COUNT）
+builds\build_60\                                    ← 外层恒为 build_N（编号来自 BUILD_COUNT）
     STALKER Localization Toolkit 1.1.0\             ← 内侧目录 = 应用名 + 完整版本串
         STALKER Localization Toolkit 1.1.0.exe
 ```
