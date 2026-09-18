@@ -2355,6 +2355,170 @@ def test_cross_validate_helpers(tmp):
     check("交叉校验：覆盖率行 + --strict 契约（与套件同一口径）", _coverage_contract)
 
 
+def test_fs_merge_order():
+    """文件系统页的合并语义 = **后者为准**（用户口径 2026-09-17）。
+
+    用户原话："X-Ray 在读取包的时候是从前到后依次读取，那就按后面的为准，最后读散装文件，
+    如果文件有重复就覆盖。"
+
+    旧实现是 first-wins：同名文件保留**先**加载的那份 → 现场 `gamedata.sqzy_patch` 里与
+    `gamedata.sq_base` 同名的文件永远输给 base（已用真包复现）。本锁直接打在 `_Node.merge`
+    上（纯逻辑，不需要 GUI / 真归档），并核对调用点确实按 `self.loaded` 的插入序（＝加载序）
+    合并 —— 少了任何一半，"后者为准"都不成立。
+    """
+    from apps.fs_app import _Node
+
+    def leaf(name, src):
+        n = _Node(name, name, False)
+        n.source = src
+        return n
+
+    def tree(src, names):
+        root = _Node("", "", True)
+        for nm in names:
+            root.add(leaf(nm, src))
+        return root
+
+    # ① 后者为准：同名文件取后并入的那份，`source` 跟着换成"引擎实际会读到的那一份"
+    merged = tree("a.db", ["same.txt", "only_a.txt"])
+    merged.merge(tree("b.db", ["same.txt", "only_b.txt"]))
+    check("文件系统页合并：同名文件后者为准（source 换成后加载的那个包）",
+          lambda: merged.children["same.txt"].source == "b.db")
+    # ② 并集不丢：不是"后一个把整棵树盖掉"
+    check("文件系统页合并：两个包各自独有的文件都还在（合并不是整树覆盖）",
+          lambda: "only_a.txt" in merged.children and "only_b.txt" in merged.children)
+    # ③ 换源时保留原节点的勾选态（用户勾过的东西不能因为重建而丢）
+    merged2 = tree("a.db", ["same.txt"])
+    merged2.children["same.txt"].checked = True
+    merged2.merge(tree("b.db", ["same.txt"]))
+    check("文件系统页合并：换源时保留原节点的勾选态",
+          lambda: merged2.children["same.txt"].source == "b.db"
+          and merged2.children["same.txt"].checked is True)
+    # ④ 同名项类型变化（文件 → 目录）也以后者为准，且目录仍能继续递归合并
+    merged3 = tree("a.db", ["x"])
+    b_root = _Node("", "", True)
+    d = _Node("x", "x", True)
+    d.add(leaf("inside.txt", "b.db"))
+    b_root.add(d)
+    merged3.merge(b_root)
+    check("文件系统页合并：同名项由文件变目录时以后者为准，且目录可递归合并",
+          lambda: merged3.children["x"].is_dir
+          and "inside.txt" in merged3.children["x"].children)
+    # ⑤ 调用点必须按 `self.loaded` 的插入序（＝加载序）合并
+    fs_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apps", "fs_app.py")
+    src = open(fs_py, encoding="utf-8").read()
+    check("文件系统页合并：_rebuild_merged 按 self.loaded 的插入序（＝加载序）逐层合并",
+          lambda: "for root in self.loaded.values(): self.merged.merge(root)" in src)
+    # ⑥ 旧行为（first-wins）不得复活：merge 的默认必须仍是"覆盖"
+    check("文件系统页合并：_Node.merge 默认 replace=True（first-wins 不得复活）",
+          lambda: "def merge(self, other, replace=True):" in src)
+
+
+def test_sqfs_dir_entries(tmp):
+    """SquashFS 封包：**目录必须写成 tar 的目录条目**。
+
+    旧实现无视条目里的 `is_dir`，把目录当成 0 字节普通文件塞进 tar —— 打完的镜像里目录变成
+    空文件，解出来的目录结构就废了（潜伏 bug，2026-09-17 查出）。这里不调外部工具：拦下
+    `subprocess.run`，直接解析喂给 `tar2sqfs` 的 tar 字节，断言成员类型与内容。
+    """
+    import io as _io
+    import subprocess as _sp
+    import tarfile as _tarfile
+    from file_system import stalker_fs
+
+    if not stalker_fs._find_sqfs_tool():
+        skip("SquashFS 封包目录条目", "本机没有 squashfs-tools-ng")
+        return
+
+    captured = {}
+    real_run = _sp.run
+
+    def fake_run(cmd, **kw):
+        stdin = kw.get("stdin")
+        if stdin is not None:
+            captured["tar"] = stdin.read()
+
+        class _R:
+            returncode = 0
+        return _R()
+
+    _sp.run = fake_run
+    try:
+        stalker_fs.sqfs_pack([("dir", b"", True), ("dir/file.txt", b"hello", False)],
+                             os.path.join(tmp, "dirtest.sq"))
+    finally:
+        _sp.run = real_run
+
+    check("SquashFS 封包：确实把 tar 喂给了 tar2sqfs", lambda: "tar" in captured)
+    if "tar" not in captured:
+        return
+    with _tarfile.open(fileobj=_io.BytesIO(captured["tar"]), mode="r") as tar:
+        members = {m.name: m for m in tar.getmembers()}
+        blob = {m.name: (tar.extractfile(m).read() if tar.extractfile(m) else b"")
+                for m in tar.getmembers() if not m.isdir()}
+
+    def _dir_is_dirtype():
+        m = members.get("dir/") or members.get("dir")
+        assert m is not None, "目录条目不见了：%r" % sorted(members)
+        assert m.isdir(), "目录被写成了普通文件（isdir=False，旧 bug 复活）"
+        return True
+
+    check("SquashFS 封包：目录条目是 DIRTYPE（不是 0 字节普通文件）", _dir_is_dirtype)
+
+    def _file_kept():
+        m = members.get("dir/file.txt")
+        assert m is not None and not m.isdir(), "普通文件条目不对：%r" % (m,)
+        assert blob.get("dir/file.txt") == b"hello", "文件内容没保住：%r" % (blob,)
+        return True
+
+    check("SquashFS 封包：同镜像里的普通文件内容与大小不变", _file_kept)
+
+
+def test_wheel_claim_identity():
+    """`wheel_claim` 的去重键必须是**事件身份**（`serial`），不能是 `time`。
+
+    实测（2026-09-17）：一次滚轮事件打到 widget 层与 toplevel 层时两层 `serial` 相同、
+    `time` 也相同；而**不同**事件的 `serial` 自增、`time` 却可能相同（合成事件恒为 0）。
+    旧实现用 `time` 当键 → 同毫秒的第二个事件、以及 `time=0` 时的所有后续事件都被丢掉。
+    """
+    from toolkit_widgets import wheel_claim, _WHEEL_CLAIM
+
+    class _E:
+        def __init__(self, serial, t):
+            self.serial = serial
+            self.time = t
+
+    saved = _WHEEL_CLAIM[0]
+
+    def _same_event_twice():
+        """同一次事件被两层各声明一次：第二次必须被拒。"""
+        _WHEEL_CLAIM[0] = None
+        assert wheel_claim(_E(7, 0)) is True, "第一层应能声明"
+        assert wheel_claim(_E(7, 0)) is False, "同一次事件的第二层应被拒（否则两层都会滚）"
+        return True
+
+    def _distinct_events_same_time():
+        """两个**不同**事件但 `time` 相同（实测为 0）：两次都应能声明。"""
+        _WHEEL_CLAIM[0] = None
+        got = [wheel_claim(_E(11, 0)), wheel_claim(_E(12, 0)), wheel_claim(_E(13, 0))]
+        assert got == [True, True, True], "同 time 的不同事件被丢了：%r" % (got,)
+        return True
+
+    def _no_event_keeps_window():
+        """没有事件对象时退回时间窗（0.06s）去重：紧邻两次第二次应被拒。"""
+        _WHEEL_CLAIM[0] = None
+        assert wheel_claim() is True
+        assert wheel_claim() is False, "无事件对象时该用时间窗兜底"
+        return True
+
+    try:
+        check("滚轮去重：同一次事件（同 serial）的第二次声明被拒", _same_event_twice)
+        check("滚轮去重：time 相同但 serial 不同的多个事件都放行", _distinct_events_same_time)
+        check("滚轮去重：无事件对象时退回 0.06s 时间窗", _no_event_keeps_window)
+    finally:
+        _WHEEL_CLAIM[0] = saved
+
+
 def main():
     print("=" * 66)
     print("功能完整性验证（全部在临时目录内操作）")
@@ -2374,6 +2538,15 @@ def main():
 
         print("\n[4] 引擎：六格式真实往返")
         test_engine(tmp)
+
+        print("\n[4b] 文件系统页合并语义（后者为准）")
+        test_fs_merge_order()
+
+        print("\n[4c] SquashFS 封包：目录条目")
+        test_sqfs_dir_entries(tmp)
+
+        print("\n[4d] 滚轮去重键（事件身份）")
+        test_wheel_claim_identity()
 
         print("\n[5] 汉化包生成")
         try:

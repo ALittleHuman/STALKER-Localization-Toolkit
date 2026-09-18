@@ -1453,7 +1453,19 @@ def sqfs_pack(files: list, out_path: str) -> bool:
     try:
         with tarfile.open(fileobj=tmp_tar, mode="w") as tar:
             for rel, data, is_dir in files:
-                ti = tarfile.TarInfo(rel)
+                # ⚠ 目录条目必须写成 DIRTYPE：旧实现无视 `is_dir`，把目录当成**0 字节普通
+                # 文件**塞进 tar —— 打完的镜像里目录变成空文件，解出来的目录结构就废了。
+                # 路径统一成 '/'（tar 规范），目录名按惯例补尾斜杠。
+                name = (rel or "").replace("\\", "/")
+                ti = tarfile.TarInfo(name)
+                if is_dir:
+                    if not name.endswith("/"):
+                        ti.name = name + "/"
+                    ti.type = tarfile.DIRTYPE
+                    ti.mode = 0o755
+                    ti.size = 0
+                    tar.addfile(ti)
+                    continue
                 ti.size = len(data)
                 tar.addfile(ti, io.BytesIO(data))
         tmp_tar.close()

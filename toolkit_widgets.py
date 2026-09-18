@@ -1329,17 +1329,27 @@ def guard_wheel(widget, sb):
 
 
 def wheel_claim(event=None):
-    """声明这次滚轮由我处理；同一次事件（`event.time` 相同）已被别人声明则返回 False。"""
+    """声明这次滚轮由我处理；**同一次事件**已被别人声明则返回 False。
+
+    去重键必须是"**事件身份**"，实测（2026-09-17）：
+      · 一次滚轮事件会依次打到 widget 层与 toplevel 层 —— 所以去重是必要的；
+      · 两层拿到的 `serial` **相同**（同一次事件），而**不同**事件的 `serial` 自增；
+      · `time` 却可能相同、甚至恒为 0（合成/排队事件实测 6 条全是 0）。
+    旧实现拿 `time` 当键 → 同毫秒内的第二个事件、以及 `time=0` 场景下**所有**后续事件都会被
+    误判成"同一次"而丢掉（HanaAgent 的观察点，实测证实且比"同毫秒"更普遍）。
+    """
     stamp = getattr(event, "time", None)
+    serial = getattr(event, "serial", None)
     if stamp is None:
         now = time.time()
         if _WHEEL_CLAIM[0] is not None and (now - _WHEEL_CLAIM[0]) < 0.06:
             return False
         _WHEEL_CLAIM[0] = now
         return True
-    if _WHEEL_CLAIM[0] == stamp:
+    key = ("s", serial) if serial else ("t", stamp)
+    if _WHEEL_CLAIM[0] == key:
         return False
-    _WHEEL_CLAIM[0] = stamp
+    _WHEEL_CLAIM[0] = key
     return True
 
 
