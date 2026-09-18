@@ -2474,6 +2474,51 @@ def test_sqfs_dir_entries(tmp):
     check("SquashFS 封包：同镜像里的普通文件内容与大小不变", _file_kept)
 
 
+def test_wheel_claim_identity():
+    """`wheel_claim` 的去重键必须是**事件身份**（`serial`），不能是 `time`。
+
+    实测（2026-09-17）：一次滚轮事件打到 widget 层与 toplevel 层时两层 `serial` 相同、
+    `time` 也相同；而**不同**事件的 `serial` 自增、`time` 却可能相同（合成事件恒为 0）。
+    旧实现用 `time` 当键 → 同毫秒的第二个事件、以及 `time=0` 时的所有后续事件都被丢掉。
+    """
+    from toolkit_widgets import wheel_claim, _WHEEL_CLAIM
+
+    class _E:
+        def __init__(self, serial, t):
+            self.serial = serial
+            self.time = t
+
+    saved = _WHEEL_CLAIM[0]
+
+    def _same_event_twice():
+        """同一次事件被两层各声明一次：第二次必须被拒。"""
+        _WHEEL_CLAIM[0] = None
+        assert wheel_claim(_E(7, 0)) is True, "第一层应能声明"
+        assert wheel_claim(_E(7, 0)) is False, "同一次事件的第二层应被拒（否则两层都会滚）"
+        return True
+
+    def _distinct_events_same_time():
+        """两个**不同**事件但 `time` 相同（实测为 0）：两次都应能声明。"""
+        _WHEEL_CLAIM[0] = None
+        got = [wheel_claim(_E(11, 0)), wheel_claim(_E(12, 0)), wheel_claim(_E(13, 0))]
+        assert got == [True, True, True], "同 time 的不同事件被丢了：%r" % (got,)
+        return True
+
+    def _no_event_keeps_window():
+        """没有事件对象时退回时间窗（0.06s）去重：紧邻两次第二次应被拒。"""
+        _WHEEL_CLAIM[0] = None
+        assert wheel_claim() is True
+        assert wheel_claim() is False, "无事件对象时该用时间窗兜底"
+        return True
+
+    try:
+        check("滚轮去重：同一次事件（同 serial）的第二次声明被拒", _same_event_twice)
+        check("滚轮去重：time 相同但 serial 不同的多个事件都放行", _distinct_events_same_time)
+        check("滚轮去重：无事件对象时退回 0.06s 时间窗", _no_event_keeps_window)
+    finally:
+        _WHEEL_CLAIM[0] = saved
+
+
 def main():
     print("=" * 66)
     print("功能完整性验证（全部在临时目录内操作）")
@@ -2499,6 +2544,9 @@ def main():
 
         print("\n[4c] SquashFS 封包：目录条目")
         test_sqfs_dir_entries(tmp)
+
+        print("\n[4d] 滚轮去重键（事件身份）")
+        test_wheel_claim_identity()
 
         print("\n[5] 汉化包生成")
         try:
