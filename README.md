@@ -7,26 +7,25 @@
 
 ---
 
-## 插件聚合页：插件去哪找、怎么发
+## 插件聚合页（GitHub Topics）
 
-主工具仓只管**宿主与内置页**；第三方插件**不放这里**，统一在**插件聚合仓 `xrkit-plugins`**（本地目录 `xrkit_plugins`）维护。
+第三方插件**不放在本仓库**。**用户到聚合页找插件，作者把插件发到聚合页** —— 聚合页就是 GitHub 的 topic 页：
 
-- **用户**：需要插件时**去聚合页找** —— 选中插件 id，把该插件目录整体拷进本工具的 `plugins\` 即可
-  （加载规则见 [PLUGINS.md](PLUGINS.md) §1）。
-- **插件作者**：把插件**放进聚合页**（一个插件一个目录 ＋ `manifest.json`），发布用
-  **tag ＋ `registry.json` ＋ sha256**，**不覆盖旧版本**；提交前跑聚合仓的 `tools/check_plugins.py`
-  做清单/入口/权限/路径的静态检查。
-- 聚合仓同时维护：`manifest.schema.json`（清单 schema）、`docs/compatibility.md`（宿主/API 兼容矩阵）、
-  `docs/porting-1x-to-2x.md`（1.x → 2.x 移植清单）。
+> **<https://github.com/topics/stalker-localization-toolkit>**
 
-> 聚合仓地址：**待发布**（建好后把 URL 填到这一行）。
+- **找插件**：打开上面的聚合页，它列出所有打了 `stalker-localization-toolkit` 标签的仓库；
+  选中插件后把插件目录整体拷进本工具的 `plugins\` 即可（加载规则见 [PLUGINS.md](PLUGINS.md) §1）。
+- **发插件**：插件作者把插件做成**独立仓库**（一个插件一个仓库），在仓库的 **About → Topics** 里
+  加上 `stalker-localization-toolkit`，它就会出现在聚合页上；清单与发布规范见 [PLUGINS.md](PLUGINS.md) §7。
+- 插件清单 `manifest.json`（`id / name / version / api / entry / permissions …`）是宿主识别插件的**唯一凭据**；
+  其中 `api` 是**宿主 API 版本**（1.x 写 `1`，2.x 写 `2`），不是插件自己的版本。
+
 > 纪律：不放大二进制；插件默认不联网、不起子进程（需要时在 `permissions` 里声明）；
 > 第三方代码保留原许可证，没有许可证的只放移植说明、不复制代码。
-> 写法与加载规则详见 [PLUGINS.md](PLUGINS.md)（插件作者必读）。
 
-**仓库关键词（GitHub Topics）**：`stalker` · `localization` · `translation` · `chinese` · `汉化` ·
-`game-modding` · `modding-tools` · `squashfs` · `lzhuf` · `x-ray-engine` · `xml` · `ogm` ·
-`python` · `tkinter` · `windows`
+**仓库关键词（GitHub Topics）**：`stalker` · `stalker-localization-toolkit` · `localization` · `translation` ·
+`chinese` · `汉化` · `game-modding` · `modding-tools` · `squashfs` · `lzhuf` · `x-ray-engine` ·
+`xml` · `ogm` · `python` · `tkinter` · `windows`
 
 ## 功能总览
 
