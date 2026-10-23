@@ -7,6 +7,34 @@
 
 ---
 
+## GitHub Topics 聚合页定位
+
+本仓库依靠 GitHub 的 **Topics**（仓库页右侧 **About → Topics**）被 **Topics 聚合页**收录，例如
+[topic: stalker](https://github.com/topics/stalker)、
+[topic: localization](https://github.com/topics/localization)、
+[topic: game-modding](https://github.com/topics/game-modding)、
+[topic: squashfs](https://github.com/topics/squashfs)。
+
+### 建议 Topics（About → Topics 里粘这一组；本节与 GitHub 侧保持同一口径，改一处同步另一处）
+
+`stalker` · `s-t-a-l-k-e-r` · `x-ray-engine` · `localization` · `translation` ·
+`chinese` · `汉化` · `game-modding` · `modding-tools` · `squashfs` · `lzhuf` ·
+`xml` · `ogm` · `python` · `tkinter` · `windows`
+
+### 覆盖范围（聚合页按关键词检索时应当对得上）
+
+| 维度 | 内容 |
+|---|---|
+| 游戏 | 潜行者（S.T.A.L.K.E.R.）**SoC / CS / CoP** 三部曲，以及主流大型模组（含俄文模组） |
+| 包格式 | X-Ray DB **六格式**（xdb / 11xx / 2215 / 2945 / 2947ru / 2947ww）、SquashFS 镜像、LZHUF 压缩 |
+| 语言 | **中文汉化**为主（同时处理西里尔 / 西欧编码源） |
+| 工具形态 | 六个图形化页面（Python + tkinter）统一在一个 Hub 中；**纯本地运行、不联网** |
+| 任务 | 解包 / 打包、编码检测与转换、文本提取、XML 校对、OGM 视频转换、汉化包生成 |
+
+> 说明：Topics 只在 GitHub 侧生效，README 里的这份清单是**可版本管理、可评审的同一口径**；
+> 在 GitHub 上改完 Topics 后，请同步更新本节，避免两边说法不一致。
+> 与 2.x 版工具集的关系：[STALKER-Localization-Toolkit-2.x](https://github.com/ALittleHuman/STALKER-Localization-Toolkit-2.x) 是重写版（C++ 引擎 + 页面宿主），本仓库是 1.x 稳定版。
+
 ## 功能总览
 
 | 工具 | 说明 |
