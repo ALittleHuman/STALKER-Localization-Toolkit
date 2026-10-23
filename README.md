@@ -7,33 +7,26 @@
 
 ---
 
-## GitHub Topics 聚合页定位
+## 插件聚合页：插件去哪找、怎么发
 
-本仓库依靠 GitHub 的 **Topics**（仓库页右侧 **About → Topics**）被 **Topics 聚合页**收录，例如
-[topic: stalker](https://github.com/topics/stalker)、
-[topic: localization](https://github.com/topics/localization)、
-[topic: game-modding](https://github.com/topics/game-modding)、
-[topic: squashfs](https://github.com/topics/squashfs)。
+主工具仓只管**宿主与内置页**；第三方插件**不放这里**，统一在**插件聚合仓 `xrkit-plugins`**（本地目录 `xrkit_plugins`）维护。
 
-### 建议 Topics（About → Topics 里粘这一组；本节与 GitHub 侧保持同一口径，改一处同步另一处）
+- **用户**：需要插件时**去聚合页找** —— 选中插件 id，把该插件目录整体拷进本工具的 `plugins\` 即可
+  （加载规则见 [PLUGINS.md](PLUGINS.md) §1）。
+- **插件作者**：把插件**放进聚合页**（一个插件一个目录 ＋ `manifest.json`），发布用
+  **tag ＋ `registry.json` ＋ sha256**，**不覆盖旧版本**；提交前跑聚合仓的 `tools/check_plugins.py`
+  做清单/入口/权限/路径的静态检查。
+- 聚合仓同时维护：`manifest.schema.json`（清单 schema）、`docs/compatibility.md`（宿主/API 兼容矩阵）、
+  `docs/porting-1x-to-2x.md`（1.x → 2.x 移植清单）。
 
-`stalker` · `s-t-a-l-k-e-r` · `x-ray-engine` · `localization` · `translation` ·
-`chinese` · `汉化` · `game-modding` · `modding-tools` · `squashfs` · `lzhuf` ·
-`xml` · `ogm` · `python` · `tkinter` · `windows`
+> 聚合仓地址：**待发布**（建好后把 URL 填到这一行）。
+> 纪律：不放大二进制；插件默认不联网、不起子进程（需要时在 `permissions` 里声明）；
+> 第三方代码保留原许可证，没有许可证的只放移植说明、不复制代码。
+> 写法与加载规则详见 [PLUGINS.md](PLUGINS.md)（插件作者必读）。
 
-### 覆盖范围（聚合页按关键词检索时应当对得上）
-
-| 维度 | 内容 |
-|---|---|
-| 游戏 | 潜行者（S.T.A.L.K.E.R.）**SoC / CS / CoP** 三部曲，以及主流大型模组（含俄文模组） |
-| 包格式 | X-Ray DB **六格式**（xdb / 11xx / 2215 / 2945 / 2947ru / 2947ww）、SquashFS 镜像、LZHUF 压缩 |
-| 语言 | **中文汉化**为主（同时处理西里尔 / 西欧编码源） |
-| 工具形态 | 六个图形化页面（Python + tkinter）统一在一个 Hub 中；**纯本地运行、不联网** |
-| 任务 | 解包 / 打包、编码检测与转换、文本提取、XML 校对、OGM 视频转换、汉化包生成 |
-
-> 说明：Topics 只在 GitHub 侧生效，README 里的这份清单是**可版本管理、可评审的同一口径**；
-> 在 GitHub 上改完 Topics 后，请同步更新本节，避免两边说法不一致。
-> 与 2.x 版工具集的关系：[STALKER-Localization-Toolkit-2.x](https://github.com/ALittleHuman/STALKER-Localization-Toolkit-2.x) 是重写版（C++ 引擎 + 页面宿主），本仓库是 1.x 稳定版。
+**仓库关键词（GitHub Topics）**：`stalker` · `localization` · `translation` · `chinese` · `汉化` ·
+`game-modding` · `modding-tools` · `squashfs` · `lzhuf` · `x-ray-engine` · `xml` · `ogm` ·
+`python` · `tkinter` · `windows`
 
 ## 功能总览
 
@@ -216,7 +209,7 @@ builds\build_60\                                    ← 外层恒为 build_N（�
   checkbox / entry / text / combo / drop_box / set_text / set_state / alive / text_view /
   ask_yes_no / ask_open_file / ask_save_file` —— 其中 `drop_box`（只读拖入框）与 `set_state`（置灰）
   是 1.1.0 新增，两个后端（Tk / Qt）都真实支持。
-- 写法与加载规则详见 [PLUGINS.md](PLUGINS.md)；架构说明见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+- 写法与加载规则详见 [PLUGINS.md](PLUGINS.md)；架构说明见 [ARCHITECTURE.md](ARCHITECTURE.md)。\n- **第三方插件不在本仓库**：统一在**插件聚合页**分发（见上文「插件聚合页：插件去哪找、怎么发」）—— 用户去那里找，作者把插件发到那里。
 
 > **仓库里 `plugins\` 是空的**：闭源解密插件 `nlc_sqfs.py` 不在仓库发布，实验性的
 > `engine_utf8_patch.py`（xrEngine UTF-8 补丁，内部测试件）同样不入库。干净克隆下 `plugins\`

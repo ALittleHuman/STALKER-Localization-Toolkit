@@ -515,3 +515,61 @@ def build(api, parent):
   （`log_summary` / `log_detail`）。插件栏目无需任何额外适配。
   **注意：不存在 `build(parent)` 这个符号**——全仓库没有任何模块级 `def build(...)`
   充当 App 契约（`build.py` 的 `build(out_dir, prerelease)` 是构建函数，与此无关）。
+
+## 7. 发布到插件聚合页
+
+本工具仓的 `plugins\` 只放**示例与内部件**；第三方插件统一发布到**插件聚合仓 `xrkit-plugins`**
+（本地目录 `xrkit_plugins`）。**用户到聚合页找插件，作者把插件放进聚合页。**
+
+### 7.1 聚合仓结构
+
+```text
+xrkit_plugins/
+  plugins/<插件 id>/
+    manifest.json        # 清单（字段见 manifest.schema.json）
+    plugin.py            # 入口（manifest.json 的 entry 指向它）
+    ...                  # 该插件自己的资源（大二进制不放这里）
+  manifest.schema.json   # 清单 schema
+  registry.json          # 发布索引（id / version / tag / sha256 / 兼容宿主版本）
+  docs/compatibility.md  # 宿主 / API 兼容矩阵
+  docs/porting-1x-to-2x.md
+  tools/check_plugins.py # 清单、入口、权限、路径静态检查
+```
+
+### 7.2 manifest.json（最小示例）
+
+```json
+{
+  "id": "hello_plugin",
+  "name": "示例插件",
+  "version": "1.0.0",
+  "api": 2,
+  "min_toolkit": "2.0.0",
+  "entry": "plugin.py",
+  "author": "local",
+  "description": "最小示例",
+  "permissions": ["filesystem:read"],
+  "assets": []
+}
+```
+
+- `api` = **插件面向的宿主 API 版本**（1.x 插件写 `1`，2.x 插件写 `2`），**不是**插件自己的版本；
+- `min_toolkit` = 能加载它的最低宿主版本；
+- `permissions` 只声明真正需要的（默认不联网、不起子进程）。
+
+### 7.3 发布步骤
+
+1. 目录名 = 插件 `id`（同一 `id` 全局唯一）；
+2. 清单按 `manifest.schema.json` 填全，入口文件与 `entry` 一致；
+3. 本地自测：宿主能加载、日志里能看到插件名、界面只用 `api.ui`（Tk 专有调用要如实处理）；
+4. 跑聚合仓的 `tools/check_plugins.py`（清单 / 入口 / 权限 / 路径静态检查）；
+5. 打 **tag**（如 `hello_plugin-1.0.0`）、算 **sha256**，在 `registry.json` 增加一条索引；
+6. **不覆盖旧版本**：升版本就发新 tag、加新索引项，旧条目保留；
+7. 在 PR / 提交说明里写清**兼容的宿主版本**（对照 `docs/compatibility.md`）。
+
+### 7.4 纪律（与聚合仓 README 一致）
+
+- 不把模型、ffmpeg、llama.cpp 等大二进制放进仓库（由下载器自己管理）；
+- 插件默认不联网、不拉起子进程；需要时在 `permissions` 里声明；
+- 自动测试不触发下载、不启动模型、不访问外网；
+- 第三方插件代码保留原许可证；没有许可证的，只放移植说明、不复制代码。
